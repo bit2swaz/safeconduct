@@ -1,0 +1,10 @@
+# private notes, plans and learning exercises
+/learning/
+CLAUDE.md
+
+/target/
+node_modules/
+.env*
+
+# local only
+/CLAUDE.md
