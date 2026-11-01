@@ -1,0 +1,22 @@
+{
+  "http://localhost:8790/": {
+    "status": 200,
+    "contentType": "text/html",
+    "body": "<!doctype html><title>shop</title>\n<style>\n  body { font: 16px sans-serif; margin: 16px; }\n  .spin { width: 24px; height: 24px; border: 4px solid #ccc; border-top-color: #333; border-radius: 50%;\n          animation: spin 1s linear infinite; }\n  @keyframes spin { to { transform: rotate(360deg); } }\n</style>\n<h1>shop</h1>\n<p>now: <span id=now></span></p>\n<p>session: <span id=session></span></p>\n<p>pick for you: <span id=pick></span></p>\n<p>lucky (worker): <span id=lucky></span></p>\n<ul id=items></ul>\n<div class=spin role=progressbar aria-label=loading></div>\n<canvas id=chart width=240 height=60></canvas>\n<p id=promo hidden>promo: free shipping</p>\n<script>\nconst names = ['lamp', 'mug', 'chair', 'desk', 'plant'];\nnow.textContent = new Date().toISOString();\nsession.textContent = crypto.randomUUID();\npick.textContent = names[Math.floor(Math.random() * names.length)];\nconst ctx = chart.getContext('2d');\nctx.font = '14px sans-serif';\nctx.fillText('sales ' + crypto.getRandomValues(new Uint8Array(1))[0], 8, 36);\nconst add = (t) => { const li = document.createElement('li'); li.textContent = t; items.append(li); };\nconst net = Promise.all([\n  fetch('/api/products').then((r) => r.json()).then((ps) => ps.forEach(add)),\n  fetch('/api/deal').then((r) => r.text()).then(add), // arrival order decides list order\n]);\nconst worker = new Promise((ok) => {\n  const w = new Worker('/worker.js');\n  w.onmessage = (e) => { lucky.textContent = e.data; ok(); };\n});\nconst promo = new Promise((ok) => setTimeout(() => { document.getElementById('promo').hidden = false; ok(); }, 300));\nconst frame = () => new Promise(requestAnimationFrame);\nPromise.all([net, worker, promo]).then(frame).then(frame).then(() => { window.done = true; });\n</script>"
+  },
+  "http://localhost:8790/worker.js": {
+    "status": 200,
+    "contentType": "text/javascript",
+    "body": "postMessage(Math.floor(Math.random() * 1000) + ' @ ' + Date.now());"
+  },
+  "http://localhost:8790/api/products": {
+    "status": 200,
+    "contentType": "application/json",
+    "body": "[\"lamp $20\",\"mug $8\"]"
+  },
+  "http://localhost:8790/api/deal": {
+    "status": 200,
+    "contentType": "text/html",
+    "body": "deal $57.64"
+  }
+}
