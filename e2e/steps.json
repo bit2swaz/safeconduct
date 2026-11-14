@@ -1,0 +1,8 @@
+{
+  "url": "http://127.0.0.1:8001/",
+  "ready": "document.querySelector('#state')?.textContent === 'ready' && document.querySelector('#worker').textContent !== ''",
+  "addCheapest": "(() => { const price = (li) => parseFloat(li.textContent.split('$')[1]); const lis = [...document.querySelectorAll('#products li')].sort((a, b) => price(a) - price(b)); lis[0].querySelector('button').click(); return true; })()",
+  "added": "document.querySelector('#cart').textContent !== '0'",
+  "probe": "fetch('/api/never-recorded').then((r) => 'live ' + r.status, () => 'blocked')",
+  "text": "document.body.innerText"
+}

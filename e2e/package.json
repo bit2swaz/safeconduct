@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@browserbasehq/stagehand": "4.4.0",
+    "playwright-core": "1.65.1"
+  }
+}

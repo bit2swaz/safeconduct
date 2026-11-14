@@ -5,7 +5,23 @@ Open infrastructure to test, contain and prove what a web agent did, and on whos
 > A *safe-conduct* is a document that lets a traveler pass safely through foreign territory.
 > safeconduct does the same for AI agents on the web.
 
-**Status:** early. Nothing works yet.
+**Status:** early. Stage 1 has started: the replay browser v0 records and replays a site for unmodified agents.
+
+## Replay browser v0
+
+`safeconduct` launches headless Chromium and exposes one CDP endpoint. Connect any agent to it as you would to Chrome.
+
+```sh
+npx playwright install chromium            # the browser it drives
+cargo run -- record shop.jsonl             # agents use http://127.0.0.1:9222; the network is saved
+cargo run -- replay shop.jsonl             # the same site, served from shop.jsonl only
+```
+
+In both modes, every page and worker gets a seeded RNG (`Math.random`, `crypto`) and a clock that starts at 2023-11-14.
+In replay, a request that is not in the recording fails and prints an `off-recording` event.
+
+Tested with Playwright (`connectOverCDP`), Stagehand v4 (`localBrowser.connect`) and Browser Use 1.0 (`Browser(cdp_url=...)`).
+Run `e2e/b1a.sh` to check all three end to end.
 
 ## Plan
 

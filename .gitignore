@@ -8,3 +8,8 @@ node_modules/
 
 # local only
 /CLAUDE.md
+
+# e2e outputs and tool caches
+/e2e/out/
+.venv/
+__pycache__/

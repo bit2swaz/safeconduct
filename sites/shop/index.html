@@ -1,0 +1,31 @@
+<!doctype html>
+<title>shop</title>
+<h1>shop</h1>
+<p>today: <span id="today"></span></p>
+<p>visitor: <span id="visitor"></span></p>
+<p>deal: <span id="deal"></span></p>
+<p>worker: <span id="worker"></span></p>
+<ul id="products"></ul>
+<p>cart: <span id="cart">0</span> <span id="order"></span></p>
+<p id="state">loading</p>
+<script>
+  today.textContent = new Date().toISOString().slice(0, 10);
+  visitor.textContent = crypto.randomUUID();
+  const w = new Worker('/worker.js');
+  w.onmessage = (e) => (worker.textContent = e.data);
+  fetch('/api/products').then((r) => r.json()).then((items) => {
+    deal.textContent = items[Math.floor(Math.random() * items.length)].id;
+    for (const it of items) {
+      const li = document.createElement('li');
+      li.innerHTML = `${it.id} $${it.price.toFixed(2)} <button id="add-${it.id}">add to cart</button>`;
+      li.querySelector('button').onclick = async () => {
+        const r = await fetch('/api/cart', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: it.id }) });
+        const { count, order } = await r.json();
+        cart.textContent = count;
+        document.getElementById('order').textContent = `order #${order}`;
+      };
+      products.append(li);
+    }
+    state.textContent = 'ready';
+  });
+</script>
