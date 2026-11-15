@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 488" font-family="'Geist', system-ui, sans-serif">
+  <defs>
+    <style>@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+    <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+  </defs>
+  <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+  <!-- ARROWS (drawn before boxes) -->
+  <!-- agent -> safeconduct -->
+  <line x1="240" y1="216" x2="318" y2="216" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+  <rect x="260" y="188" width="40" height="12" rx="2" fill="#f5f5f5"/>
+  <text x="280" y="197" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CDP</text>
+  <!-- safeconduct -> chromium -->
+  <line x1="560" y1="216" x2="758" y2="216" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <rect x="604" y="188" width="112" height="12" rx="2" fill="#f5f5f5"/>
+  <text x="660" y="197" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CDP + FETCH</text>
+  <!-- safeconduct -> live web (record only) -->
+  <line x1="440" y1="176" x2="440" y2="106" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-link)"/>
+  <rect x="452" y="136" width="84" height="12" rx="2" fill="#f5f5f5"/>
+  <text x="456" y="145" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">RECORD ONLY</text>
+  <!-- safeconduct -> recording (write, record) -->
+  <line x1="424" y1="256" x2="424" y2="330" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <rect x="356" y="288" width="56" height="12" rx="2" fill="#f5f5f5"/>
+  <text x="408" y="297" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">RECORD</text>
+  <!-- recording -> safeconduct (read, replay) -->
+  <line x1="456" y1="332" x2="456" y2="258" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <rect x="468" y="288" width="56" height="12" rx="2" fill="#f5f5f5"/>
+  <text x="472" y="297" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">REPLAY</text>
+  <!-- safeconduct -> rules (events) -->
+  <path d="M 352,256 V 356 Q 352,364 344,364 H 242" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <rect x="268" y="344" width="56" height="12" rx="2" fill="#f5f5f5"/>
+  <text x="296" y="353" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">EVENTS</text>
+
+  <!-- NODES -->
+  <!-- live web (external) -->
+  <rect x="360" y="40" width="160" height="64" rx="6" fill="#f5f5f5"/>
+  <rect x="360" y="40" width="160" height="64" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+  <rect x="368" y="46" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+  <text x="382" y="55" fill="rgba(45,49,66,0.60)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">WEB</text>
+  <text x="440" y="76" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">The live web</text>
+  <text x="440" y="92" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">sites + model APIs</text>
+
+  <!-- agent (input) -->
+  <rect x="40" y="176" width="200" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="40" y="176" width="200" height="80" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+  <rect x="48" y="182" width="40" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.60)" stroke-width="0.8"/>
+  <text x="68" y="191" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">AGENT</text>
+  <text x="140" y="214" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">Your agent</text>
+  <text x="140" y="230" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Playwright, Stagehand,</text>
+  <text x="140" y="242" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Browser Use, any CDP client</text>
+
+  <!-- safeconduct (focal) -->
+  <rect x="320" y="176" width="240" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="320" y="176" width="240" height="80" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+  <rect x="328" y="182" width="36" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+  <text x="346" y="191" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CORE</text>
+  <text x="440" y="214" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">safeconduct</text>
+  <text x="440" y="230" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">record · replay · fuzz</text>
+  <text x="440" y="242" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">CDP :9222 · model proxy :9223</text>
+
+  <!-- chromium -->
+  <rect x="760" y="176" width="160" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+  <rect x="768" y="182" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+  <text x="794" y="191" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">BROWSER</text>
+  <text x="840" y="220" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">Chromium</text>
+  <text x="840" y="236" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">headless</text>
+
+  <!-- rules -->
+  <rect x="40" y="332" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+  <rect x="48" y="338" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+  <text x="68" y="347" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RULES</text>
+  <text x="140" y="368" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">Your rules</text>
+  <text x="140" y="384" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">TS or Python client</text>
+
+  <!-- recording (store) -->
+  <rect x="360" y="332" width="160" height="64" rx="6" fill="#f5f5f5"/>
+  <rect x="360" y="332" width="160" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+  <rect x="368" y="338" width="32" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
+  <text x="384" y="347" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FILE</text>
+  <text x="440" y="368" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">Recording</text>
+  <text x="440" y="384" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">run.jsonl</text>
+
+  <!-- LEGEND -->
+  <line x1="40" y1="428" x2="920" y2="428" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+  <text x="40" y="452" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+  <rect x="120" y="444" width="16" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+  <text x="144" y="453" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">safeconduct</text>
+  <rect x="268" y="444" width="16" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+  <text x="292" y="453" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">stored file</text>
+  <rect x="412" y="444" width="16" height="12" rx="2" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+  <text x="436" y="453" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">outside world</text>
+  <line x1="568" y1="450" x2="600" y2="450" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="608" y="453" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">only while recording</text>
+</svg>

@@ -5,41 +5,136 @@ open infrastructure to test, contain and prove what a web agent did, and on whos
 > A *safe-conduct* is a document that lets a traveler pass safely through foreign territory.
 > safeconduct does the same for AI agents on the web.
 
-**Status:** early. Stage 1 has started: the replay browser v0 records and replays a site for unmodified agents.
+**Status:** early. Stage 1 (the replay browser) is in progress.
 
-## Replay browser
+## The problem
 
-`safeconduct` launches headless Chromium and exposes one CDP endpoint. Connect any agent to it as you would to Chrome.
+AI agents use websites as people do. They click, type, fill in forms and pay. When an agent makes an error, it is hard to find the cause. The web changes on each visit: prices, ads, times and page order are different every time. Thus, an error that you see once can be impossible to see again.
 
-```sh
-npx playwright install chromium            # the browser it drives
-cargo run -- record run.jsonl              # agents use http://127.0.0.1:9222; site and model calls are saved
-cargo run -- replay run.jsonl              # exact mode: the same run again, from run.jsonl only
-cargo run -- replay run.jsonl --live-model # the recorded site, a live model
-cargo run -- replay run.jsonl --fuzz 5     # the recorded site, a live model, seeded faults
+## What safeconduct does
+
+safeconduct is a browser for testing AI agents. It records one agent run. Then it plays the run back, exactly the same, as many times as you want. With a recorded run, you can:
+
+- Repeat an error until you find its cause.
+- Add problems on purpose (slow pages, server errors, cookie walls) and see how the agent copes.
+- Write rules that each run must obey, for example "never pay twice".
+
+You do not change your agent. safeconduct looks like a normal Chrome browser to the agent.
+
+## How it works
+
+![safeconduct sits between your agent and Chromium. In record mode it saves the live web to a file. In replay mode it answers from that file.](docs/replay-browser.svg)
+
+Your agent connects to safeconduct over CDP (Chrome DevTools Protocol), as it connects to Chrome. safeconduct controls a headless Chromium and sees each network request.
+
+- In **record** mode, safeconduct sends the requests to the live web and saves each answer in a file.
+- In **replay** mode, safeconduct answers each request from that file. The live web is not necessary.
+
+The page also gets a fixed clock (it starts at 2023-11-14) and a seeded random number generator. As a result, the page is the same on each replay.
+
+## Quick start
+
+You need Rust, Node.js and a Chromium from Playwright.
+
+1. Install Chromium:
+   ```sh
+   npx playwright install chromium
+   ```
+2. Record a run. Connect your agent to `http://127.0.0.1:9222` and let it do its task. Then stop safeconduct with Ctrl-C.
+   ```sh
+   cargo run -- record run.jsonl
+   ```
+3. Replay the run. Connect your agent again, to the same address.
+   ```sh
+   cargo run -- replay run.jsonl
+   ```
+
+## Modes
+
+| Mode | Command | Site | Model (LLM) |
+|---|---|---|---|
+| Record | `record run.jsonl` | live | live, and saved |
+| Exact replay | `replay run.jsonl` | from the file | from the file |
+| Live model | `replay run.jsonl --live-model` | from the file | live |
+| Fuzz | `replay run.jsonl --fuzz 5` | from the file, with faults | live |
+
+**Exact replay** repeats the whole run: the site, the model answers and the requests that the agent process sends itself. It works with the site down and with no API key. A request that is not in the file ends the run with exit code 3.
+
+**Fuzz** adds seeded faults to the replayed site:
+
+- A page load can be slow, or it can get a popup (a cookie wall) or a banner (text that moves the layout).
+- Other requests can be slow, get a 503 error or lose the connection.
+- A request that is not in the file gets a 503 or a lost connection, and the run continues.
+
+The same seed (`--fuzz 5`) gives the same faults on each run. Use `--fault-rate 0.25` to set the share of requests that get a fault.
+
+## Connect your agent
+
+| Agent | How to connect |
+|---|---|
+| Playwright | `chromium.connectOverCDP('http://127.0.0.1:9222')` |
+| Stagehand v4 | `localBrowser.connect({ cdpUrl: 'http://127.0.0.1:9222' })` |
+| Browser Use 1.0 | `Browser(cdp_url='http://127.0.0.1:9222')` |
+
+If your agent calls its model from inside the browser (Stagehand v4), safeconduct records the calls automatically.
+
+If your agent calls its model from its own process, point the model base URL to the model proxy on port 9223. Use `GOOGLE_GEMINI_BASE_URL`, `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`. Also set `HTTP_PROXY` to port 9223, so that safeconduct records the site requests of the agent process. safeconduct never saves API keys.
+
+## Rules
+
+A rule is a function. safeconduct calls it after each step of the agent, and the rule returns a message if the step breaks it. A step ends when the agent did an action, the page sent requests, and the network became quiet again.
+
+The thin clients start safeconduct for you and run your rules. Two rules come with them: stay in the allowed origins, and never submit a payment twice.
+
+TypeScript (Node.js 23.6 or later runs the `.ts` file directly):
+
+```ts
+import { replay, allowedOrigins, noDoublePayment } from './clients/ts/index.ts';
+const run = await replay('run.jsonl', { rules: [allowedOrigins(['https://shop.example']), noDoublePayment('/api/pay')] });
+// connect your agent to run.endpoint and run it
+await run.close(); // run.violations: [{ rule, step, message }]
 ```
 
-**Exact mode** repeats a whole agent run: the site, the agent's model calls and its own HTTP requests come from the recording, with the site down and no API key.
-- Model calls from inside the browser (Stagehand v4) are caught automatically.
-- An agent that calls its model from its own process points its base URL at the model proxy on port 9223 (`GOOGLE_GEMINI_BASE_URL`, `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`). Set `HTTP_PROXY` to the same port so its own site requests are recorded too.
-- API keys are never stored.
+Python (set `PYTHONPATH=clients/py`):
 
-**Fuzz mode** (`--fuzz SEED`, `--fault-rate 0.25`) puts seeded faults on the replayed site: page loads can be slowed or get a popup (a cookie wall) or a banner (injected text that shifts the layout); other requests can be slowed, get a 503 or lose the connection. A request that is not in the recording gets a 503 or a dropped connection, and the run goes on. Each fault prints a `fault` event. The same seed gives the same faults in every run, whatever order requests arrive in.
+```python
+from safeconduct import replay, allowed_origins, no_double_payment
+with replay('run.jsonl', rules=[allowed_origins(['https://shop.example']), no_double_payment('/api/pay')]) as run:
+    ...  # connect your agent to run.endpoint and run it
+print(run.violations)
+```
 
-Every page and worker gets a seeded RNG (`Math.random`, `crypto`) and a clock that starts at 2023-11-14. Each agent command waits until the page is settled, and site responses replay in recorded order.
-A request that is not in the recording prints an `off-recording` event and ends the run (exit code 3). A model prompt that differs from the recording prints `llm-drift`.
+To write your own rule, write a function `(step, all_events)` that returns a message, or nothing. `step.events` holds the events of that step.
 
-Tested with Playwright (`connectOverCDP`), Stagehand v4 (`localBrowser.connect`) and Browser Use 1.0 (`Browser(cdp_url=...)`).
-`e2e/run.sh` checks everything end to end from saved fixtures (no model calls). `e2e/run.sh --live` uses real agents and a real model.
+## Events
+
+safeconduct writes one JSON event per line to stdout:
+
+| Event | Meaning |
+|---|---|
+| `ready` | The browser is ready. It gives the CDP address and the model proxy address. |
+| `request` | The page or the agent process sent a site request. POST requests include the body. |
+| `step` | One step of the agent ended. |
+| `served` | Replay answered a request from the file. |
+| `off-recording` | A request is not in the file. In exact replay, the run ends. |
+| `llm-drift` | A model prompt is different from the recorded prompt. |
+| `fault` | Fuzz mode added a fault. |
+| `unsupported` | The agent process sent an HTTPS request through `HTTP_PROXY`. safeconduct cannot record it. |
+
+## Tests
+
+`e2e/run.sh` tests every part, end to end, with Playwright, Stagehand and Browser Use on a synthetic shop (`sites/shop`). It uses saved agent runs, so it makes no model calls.
+
+`e2e/run.sh --live` uses real agents and a real model (the free Gemini tier). Put `GEMINI_API_KEY` in `.env` first.
 
 ## Plan
 
 | Stage | Product | What it does |
 |---|---|---|
-| 1 | replay browser | Deterministic record/replay for browser agents. Seeded faults, rules checked after every step, shrinking to the smallest failing run. |
-| 2 | guard | Open policy engine between an agent and the browser (CDP and MCP layers). |
-| 3 | receipts | Verifiable session receipts: zkTLS attestations, archive, deterministic re-render, hash-chained action log. |
-| 4 | gate | Open, self-hostable gate for sites: agent signatures, delegation, access policy, HTTP 402. |
+| 1 | replay browser | Records and replays agent runs exactly. Adds seeded faults, checks rules after each step, and cuts a failed run down to the smallest run that fails. |
+| 2 | guard | An open policy engine between an agent and the browser. It stops unsafe actions before they occur. |
+| 3 | receipts | Proof of what an agent did: zkTLS attestations, an archive, a deterministic re-render and a hash-chained log of actions. |
+| 4 | gate | An open gate that sites can host. It checks agent signatures and delegation, applies the access policy of the site and accepts payment (HTTP 402). |
 
 ## License
 
