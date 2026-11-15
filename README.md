@@ -1,27 +1,33 @@
 # safeconduct
 
-Open infrastructure to test, contain and prove what a web agent did, and on whose behalf.
+open infrastructure to test, contain and prove what a web agent did, and on whose behalf
 
 > A *safe-conduct* is a document that lets a traveler pass safely through foreign territory.
 > safeconduct does the same for AI agents on the web.
 
 **Status:** early. Stage 1 has started: the replay browser v0 records and replays a site for unmodified agents.
 
-## Replay browser v0
+## Replay browser
 
 `safeconduct` launches headless Chromium and exposes one CDP endpoint. Connect any agent to it as you would to Chrome.
 
 ```sh
 npx playwright install chromium            # the browser it drives
-cargo run -- record shop.jsonl             # agents use http://127.0.0.1:9222; the network is saved
-cargo run -- replay shop.jsonl             # the same site, served from shop.jsonl only
+cargo run -- record run.jsonl              # agents use http://127.0.0.1:9222; site and model calls are saved
+cargo run -- replay run.jsonl              # exact mode: the same run again, from run.jsonl only
+cargo run -- replay run.jsonl --live-model # the recorded site, a live model
 ```
 
-In both modes, every page and worker gets a seeded RNG (`Math.random`, `crypto`) and a clock that starts at 2023-11-14.
-In replay, a request that is not in the recording fails and prints an `off-recording` event.
+**Exact mode** repeats a whole agent run: the site, the agent's model calls and its own HTTP requests come from the recording, with the site down and no API key.
+- Model calls from inside the browser (Stagehand v4) are caught automatically.
+- An agent that calls its model from its own process points its base URL at the model proxy on port 9223 (`GOOGLE_GEMINI_BASE_URL`, `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`). Set `HTTP_PROXY` to the same port so its own site requests are recorded too.
+- API keys are never stored.
+
+Every page and worker gets a seeded RNG (`Math.random`, `crypto`) and a clock that starts at 2023-11-14. Each agent command waits until the page is settled, and site responses replay in recorded order.
+A request that is not in the recording prints an `off-recording` event and ends the run (exit code 3). A model prompt that differs from the recording prints `llm-drift`.
 
 Tested with Playwright (`connectOverCDP`), Stagehand v4 (`localBrowser.connect`) and Browser Use 1.0 (`Browser(cdp_url=...)`).
-Run `e2e/b1a.sh` to check all three end to end.
+`e2e/run.sh` checks everything end to end from saved fixtures (no model calls). `e2e/run.sh --live` uses real agents and a real model.
 
 ## Plan
 

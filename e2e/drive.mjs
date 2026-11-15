@@ -27,5 +27,8 @@ await page.goto(steps.url);
 await until(steps.ready);
 await js(steps.addCheapest);
 await until(steps.added);
-console.log(JSON.stringify({ text: await js(steps.text), probe: probe ? await js(steps.probe) : null }));
-await done();
+const text = await js(steps.text);
+// In exact mode the probe is off the recording, so the runtime ends the run right after it.
+console.log(JSON.stringify({ text, probe: probe ? await js(steps.probe) : null }));
+await Promise.race([done(), new Promise((r) => setTimeout(r, 2000))]).catch(() => {});
+process.exit(0);

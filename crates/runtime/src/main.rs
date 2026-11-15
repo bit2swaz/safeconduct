@@ -3,10 +3,12 @@
 //! Launches headless Chromium and exposes one CDP endpoint. Agents connect to it as to any
 //! Chrome (connectOverCDP, cdp_url). Beside the agent's connection the runtime keeps its own:
 //! - it records or replays the network through Fetch,
+//! - it records or replays the agent's model calls (exact mode),
 //! - it seeds RNG and fixes the clock in every page and worker before their scripts run.
 //!
 //! CDP state is per session, so the agent never sees our commands, replies or events.
 mod cdp;
+mod llm;
 mod net;
 
 use cdp::Cdp;
@@ -19,7 +21,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-const USAGE: &str = "usage: safeconduct record|replay <file.jsonl> [--port 9222] [--seed 42]";
+const USAGE: &str = "usage: safeconduct record|replay <file.jsonl> [--port 9222] [--seed 42] [--live-model]
+  CDP on --port, model proxy on --port + 1. Replay is exact mode: off-recording ends the run (exit 3).
+  --live-model: replay the site only; model calls go to the real API.";
 /// 2023-11-14T22:13:20Z. Every run starts its clock here.
 const T0: u64 = 1_700_000_000_000;
 
@@ -32,7 +36,7 @@ async fn main() {
     let (port, seed) = (flag("--port", 9222) as u16, flag("--seed", 42));
     let net = Arc::new(match (args.first().map(String::as_str), args.get(1)) {
         (Some("record"), Some(path)) => Net::record(path),
-        (Some("replay"), Some(path)) => Net::replay(path),
+        (Some("replay"), Some(path)) => Net::replay(path, args.iter().any(|a| a == "--live-model")),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -45,25 +49,37 @@ async fn main() {
 
     let start = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
     let init = format!("{}({seed}, {T0}, {start});", include_str!("init.js"));
-    let fetch = json!({ "patterns": net.fetch_patterns() });
-    let setup_cmds = Arc::new((init, fetch));
+    let llm_fetch = (!net.live_model).then(|| json!({ "patterns": net.llm_patterns() }));
+    let setup_cmds = Arc::new((init, json!({ "patterns": net.site_patterns() }), llm_fetch));
     // Pause every new target until it is set up. The agent may ask for the same pause;
     // Chrome then waits for both of us to call runIfWaitingForDebugger.
     let auto_attach = json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true });
     cdp.call("Target.setAutoAttach", auto_attach.clone(), None).await.unwrap();
 
+    // Chrome reports the targets that already exist (the startup tab) before it answers
+    // setAutoAttach. Set them up before saying ready, or an agent that connects at once races them.
+    while let Ok(ev) = events.try_recv() {
+        if ev["method"] == "Target.attachedToTarget" {
+            setup(&cdp, &ev["params"], &setup_cmds.0, &setup_cmds.1, &setup_cmds.2, auto_attach.clone()).await;
+        }
+    }
     let listener = TcpListener::bind(("127.0.0.1", port)).await.expect("bind port");
-    println!("{}", json!({ "event": "ready", "endpoint": format!("http://127.0.0.1:{port}") }));
+    let llm_listener = TcpListener::bind(("127.0.0.1", port + 1)).await.expect("bind model proxy port");
+    tokio::spawn(llm::serve(llm_listener, net.clone(), format!("127.0.0.1:{port}")));
+    let llm_url = format!("http://127.0.0.1:{}", port + 1);
+    println!("{}", json!({ "event": "ready", "endpoint": format!("http://127.0.0.1:{port}"), "llm": llm_url }));
 
     let events_loop = async {
         while let Some(ev) = events.recv().await {
             let (cdp, net, cmds, auto_attach) = (cdp.clone(), net.clone(), setup_cmds.clone(), auto_attach.clone());
             match ev["method"].as_str() {
                 Some("Fetch.requestPaused") => {
-                    tokio::spawn(async move { net.paused(&cdp, ev["sessionId"].as_str(), &ev["params"]).await });
+                    let host = ev["params"]["request"]["url"].as_str().unwrap_or("").split('/').nth(2).unwrap_or("").to_string();
+                    let llm = net::LLM_HOSTS.contains(&host.as_str());
+                    tokio::spawn(async move { net.paused(&cdp, ev["sessionId"].as_str(), &ev["params"], llm).await });
                 }
                 Some("Target.attachedToTarget") => {
-                    tokio::spawn(async move { setup(&cdp, &ev["params"], &cmds.0, &cmds.1, auto_attach).await });
+                    tokio::spawn(async move { setup(&cdp, &ev["params"], &cmds.0, &cmds.1, &cmds.2, auto_attach).await });
                 }
                 _ => {}
             }
@@ -72,39 +88,52 @@ async fn main() {
     let accept_loop = async {
         loop {
             let (sock, _) = listener.accept().await.unwrap();
-            tokio::spawn(handle(sock, chrome_port, port));
+            tokio::spawn(handle(sock, chrome_port, port, net.clone()));
         }
     };
     // Exit on Ctrl-C or SIGTERM, so Chrome is always killed below.
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    let mut code = 0;
     tokio::select! {
         _ = events_loop => eprintln!("chrome closed the connection"),
         _ = accept_loop => {}
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+        _ = net.stop.notified() => {
+            // Exact mode left the recording. Let the failed reply reach the agent, then end the run.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            code = 3;
+        }
     }
     drop(chrome);
     std::fs::remove_dir_all(profile).ok();
+    std::process::exit(code);
 }
 
 /// Prepare one new target, then let it run: Fetch and the init script are in place
-/// before runIfWaitingForDebugger. Extension workers are the agent's (Stagehand v4), not the site.
-async fn setup(cdp: &Cdp, p: &Value, init: &str, fetch: &Value, auto_attach: Value) {
+/// before runIfWaitingForDebugger. Extension workers are the agent's (Stagehand v4), not the site:
+/// there we only catch model calls.
+async fn setup(cdp: &Cdp, p: &Value, init: &str, site_fetch: &Value, llm_fetch: &Option<Value>, auto_attach: Value) {
     let s = p["sessionId"].as_str();
     let site = !p["targetInfo"]["url"].as_str().unwrap_or("").starts_with("chrome-extension://");
     match p["targetInfo"]["type"].as_str().unwrap_or("") {
         // Pages always: Stagehand opens its tabs on an extension page, then goes to the site.
         // init.js itself skips extension documents.
         "page" | "iframe" => {
-            cdp.call("Fetch.enable", fetch.clone(), s).await.ok();
-            cdp.call("Page.enable", json!({}), s).await.ok(); // without it, the script below never runs
+            cdp.call("Fetch.enable", site_fetch.clone(), s).await.ok();
+            cdp.call("Page.enable", json!({}), s).await.ok(); // without it, the scripts below never run
             let script = json!({ "source": init, "runImmediately": true });
             cdp.call("Page.addScriptToEvaluateOnNewDocument", script, s).await.ok();
             cdp.call("Target.setAutoAttach", auto_attach, s).await.ok(); // its workers and OOPIFs
         }
         "worker" | "shared_worker" | "service_worker" if site => {
-            cdp.call("Fetch.enable", fetch.clone(), s).await.ok();
+            cdp.call("Fetch.enable", site_fetch.clone(), s).await.ok();
             cdp.call("Runtime.evaluate", json!({ "expression": init }), s).await.ok();
+        }
+        "service_worker" => {
+            if let Some(f) = llm_fetch {
+                cdp.call("Fetch.enable", f.clone(), s).await.ok();
+            }
         }
         _ => {}
     }
@@ -129,6 +158,10 @@ fn launch() -> (KillOnDrop, String, std::path::PathBuf) {
             "--headless=new",
             "--enable-unsafe-extension-debugging", // the Extensions CDP domain, for Stagehand v4
             "--disable-component-extensions-with-background-pages", // no built-in service workers
+            // Chrome numbers DOM nodes per renderer process, and whether a page lands in the
+            // pre-warmed spare process depends on timing. Agents put these numbers in prompts
+            // (Stagehand), so with a spare process ~15% of recordings did not match their replays.
+            "--disable-features=SpareRendererForSitePerProcess",
             "--remote-debugging-port=0",
             "about:blank",
         ])
@@ -164,7 +197,7 @@ fn find_chromium() -> String {
 }
 
 /// One TCP connection from the agent: a WebSocket upgrade, or plain HTTP like /json/version.
-async fn handle(sock: TcpStream, chrome_port: u16, port: u16) {
+async fn handle(sock: TcpStream, chrome_port: u16, port: u16, net: Arc<Net>) {
     let mut head = vec![0; 8192];
     let n = loop {
         let n = sock.peek(&mut head).await.unwrap_or(0);
@@ -173,7 +206,7 @@ async fn handle(sock: TcpStream, chrome_port: u16, port: u16) {
         }
     };
     if String::from_utf8_lossy(&head[..n]).to_ascii_lowercase().contains("upgrade: websocket") {
-        websocket(sock, chrome_port).await;
+        websocket(sock, chrome_port, &net).await;
     } else {
         http(sock, chrome_port, port).await.ok();
     }
@@ -214,9 +247,15 @@ async fn http(mut sock: TcpStream, chrome_port: u16, port: u16) -> std::io::Resu
     sock.write_all(resp.as_bytes()).await
 }
 
+/// Agent commands that can make the page load, run scripts or fetch.
+const STARTS_WORK: [&str; 6] = [
+    "\"Page.navigate", "\"Page.reload", "\"Input.", "\"Runtime.evaluate", "\"Runtime.callFunctionOn", "\"Target.createTarget",
+];
+
 /// Pipe one agent WebSocket to the same path on Chrome, both ways, unchanged.
+/// Each agent command waits until the page's network is quiet (Net::settle).
 #[allow(clippy::result_large_err)] // the handshake callback's error type is tungstenite's
-async fn websocket(sock: TcpStream, chrome_port: u16) {
+async fn websocket(sock: TcpStream, chrome_port: u16, net: &Net) {
     let mut path = String::new();
     let Ok(agent) = tokio_tungstenite::accept_hdr_async(sock, |req: &tokio_tungstenite::tungstenite::handshake::server::Request, resp| {
         path = req.uri().path().to_string();
@@ -233,8 +272,13 @@ async fn websocket(sock: TcpStream, chrome_port: u16) {
     let (mut chrome_tx, mut chrome_rx) = chrome.split();
     let up = async {
         while let Some(Ok(m)) = agent_rx.next().await {
+            net.settle().await;
+            let starts_work = m.to_text().is_ok_and(|t| STARTS_WORK.iter().any(|w| t.contains(w)));
             if m.is_close() || chrome_tx.send(m).await.is_err() {
                 break;
+            }
+            if starts_work {
+                net.touched();
             }
         }
     };

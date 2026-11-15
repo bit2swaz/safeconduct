@@ -27,9 +27,14 @@ async def main():
     until(steps['ready'])
     h.js(steps['addCheapest'])
     until(steps['added'])
+    text = h.js(steps['text'])
+    # In exact mode the probe is off the recording, so the runtime ends the run right after it.
     probe = h.js(steps['probe']) if '--probe' in sys.argv else None
-    print(json.dumps({'text': h.js(steps['text']), 'probe': probe}))
-    await b.stop()
+    print(json.dumps({'text': text, 'probe': probe}), flush=True)
+    try:
+        await asyncio.wait_for(b.stop(), 5)
+    except Exception:
+        pass
 
 
 asyncio.run(main())
