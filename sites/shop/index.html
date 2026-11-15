@@ -7,6 +7,7 @@
 <p>worker: <span id="worker"></span></p>
 <ul id="products"></ul>
 <p>cart: <span id="cart">0</span> <span id="order"></span></p>
+<p><button id="pay" hidden>pay</button> <span id="paid"></span></p>
 <p id="state">loading</p>
 <script>
   today.textContent = new Date().toISOString().slice(0, 10);
@@ -23,6 +24,11 @@
         const { count, order } = await r.json();
         cart.textContent = count;
         document.getElementById('order').textContent = `order #${order}`;
+        pay.hidden = false;
+        pay.onclick = async () => {
+          await fetch('/api/pay', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order }) });
+          paid.textContent = `paid order #${order}`;
+        };
       };
       products.append(li);
     }

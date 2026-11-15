@@ -282,12 +282,13 @@ async fn websocket(sock: TcpStream, chrome_port: u16, net: &Net) {
     let up = async {
         while let Some(Ok(m)) = agent_rx.next().await {
             net.settle().await;
+            net.step();
             let starts_work = m.to_text().is_ok_and(|t| STARTS_WORK.iter().any(|w| t.contains(w)));
             if m.is_close() || chrome_tx.send(m).await.is_err() {
                 break;
             }
             if starts_work {
-                net.touched();
+                net.acted();
             }
         }
     };

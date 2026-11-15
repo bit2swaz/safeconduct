@@ -28,7 +28,10 @@ const until = async (expr) => {
 await page.goto(steps.url);
 if (await until(steps.ready)) {
   await js(steps.addCheapest);
-  await until(steps.added);
+  if (await until(steps.added)) {
+    await js(steps.pay);
+    await until(steps.paid);
+  }
 }
 const text = await js(steps.text);
 // In exact mode the probe is off the recording, so the runtime ends the run right after it.

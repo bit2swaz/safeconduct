@@ -8,6 +8,10 @@
 #   B1b-2  fuzz mode: seeded faults on the replayed shop. The same seed gives the same faults and
 #          the same page; off-recording gets a fault and the run goes on. With --live, real agents
 #          run into a cookie-wall popup (seed 5).
+#   B1b-3  rules: the TS and Python clients start the runtime and check rules after every step.
+#          A clean run has no violations; paying twice and leaving the shop's origin are caught,
+#          at the right steps, by both clients alike. With --live, real agents buy and pay with
+#          the rules on (Stagehand via the TS client, Browser Use via the Python one).
 #
 # Usage: e2e/run.sh                 agent runs come from e2e/fixtures: 0 model calls, no key
 #        e2e/run.sh --live          fresh live agent runs; close every phase with this
@@ -24,6 +28,7 @@ done
 export ANONYMIZED_TELEMETRY=false BH_TELEMETRY=0 BROWSER_USE_NO_UPDATE_CHECK=1 BH_UPDATE_CHECK=0
 cargo build -q --manifest-path ../Cargo.toml
 bin=../target/debug/safeconduct
+export SAFECONDUCT_BIN=$PWD/$bin PYTHONPATH=$PWD/../clients/py # the clients start the runtime themselves
 LLM=http://127.0.0.1:9223 # the runtime's model proxy (CDP port + 1)
 [ -d node_modules ] || npm ci --silent
 out=out/$(date +%Y%m%d-%H%M%S)
@@ -54,7 +59,7 @@ drive() { # drive <client> [--probe]
 }
 agent() { # agent <name>: one real agent task, prints {"answer": ...}
   case $1 in
-    stagehand) timeout 120 node agent_stagehand.mjs ;;
+    stagehand) timeout 180 node agent_stagehand.mjs ;;
     # Model calls and the agent's own site requests both go through the runtime.
     browser-use) GOOGLE_GEMINI_BASE_URL=$LLM HTTP_PROXY=$LLM http_proxy=$LLM timeout 180 uv run -q agent_bu.py ;;
   esac 2>> $out/agent.err | tail -1
@@ -261,5 +266,71 @@ print(f"   finding: {'added to cart through the faults' if cart else 'did NOT ad
 sys.exit(0 if all(checks.values()) else 1)
 PY
   done
+fi
+echo "== B1b-3 rules: TS and Python clients, Playwright on the replayed shop"
+for c in ts py; do for mode in clean bad; do
+  case $c in
+    ts) timeout 120 node rules.mjs $out/shop.jsonl $mode ;;
+    py) timeout 180 uv run -q rules.py $out/shop.jsonl $mode ;;
+  esac 2>> $out/rules.err | tail -1 > $out/rules-$c-$mode.json || true
+done; done
+python3 - $out <<'PY' || fail=1
+import json, sys
+out = sys.argv[1]
+def result(c, mode):
+    try:
+        return json.load(open(f'{out}/rules-{c}-{mode}.json'))
+    except ValueError:
+        return {'code': None, 'steps': 0, 'violations': [{'rule': 'no result', 'step': 0, 'message': ''}]}
+def found(r):  # [(rule, step)], rule names alike in both languages (noDoublePayment = no_double_payment)
+    return [(v['rule'].replace('_', '').lower(), v['step']) for v in r['violations']]
+checks = {}
+for c in ('ts', 'py'):
+    clean, bad = result(c, 'clean'), result(c, 'bad')
+    f = dict(found(bad))
+    checks[f"{c}: clean run, no violations ({clean['steps']} steps)"] = clean['code'] == 0 and clean['violations'] == [] and clean['steps'] >= 3
+    checks[f"{c}: paying twice, then leaving the origin: both caught ({found(bad)})"] = (
+        sorted(f) == ['allowedorigins', 'nodoublepayment'] and len(found(bad)) == 2 and f['nodoublepayment'] < f['allowedorigins'])
+    checks[f"{c}: leaving the origin was off the recording too (exit {bad['code']})"] = bad['code'] == 3
+checks['both clients report the same violations at the same steps'] = (
+    found(result('ts', 'bad')) == found(result('py', 'bad'))
+    and [v['message'] for v in result('ts', 'bad')['violations']] == [v['message'] for v in result('py', 'bad')['violations']])
+for k, ok in checks.items():
+    print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+sys.exit(0 if all(checks.values()) else 1)
+PY
+
+if [ $LIVE = 1 ]; then
+  for name in stagehand browser-use; do
+    echo "== B1b-3 rules: real agent $name ($GEMINI_MODEL, live model) buys and pays, rules on"
+    (export SC_RULES=$out/shop.jsonl; agent $name) > $out/rules-agent-$name.json || true
+    python3 - $out $name <<'PY' || fail=1
+import json, sys
+out, name = sys.argv[1:3]
+try:
+    r = json.load(open(f'{out}/rules-agent-{name}.json'))
+except ValueError:
+    r = {}
+reqs = r.get('requests', [])
+pays = [(q['url'], q.get('post')) for q in reqs if q['method'] == 'POST' and '/api/pay' in q['url']]
+# The rules again, over the whole request log: the client must agree.
+expect = {'nodoublepayment'} if len(pays) > len(set(pays)) else set()
+expect |= {'allowedorigins'} if any(not q['url'].startswith('http://127.0.0.1:8001/') for q in reqs) else set()
+got = {v['rule'].replace('_', '').lower() for v in r.get('violations', [])}
+checks = {
+    f"rules ran after every step ({r.get('steps', 0)} steps, {len(reqs)} requests)": r.get('steps', 0) >= 1 and len(reqs) > 0,
+    f"violations match the request log ({sorted(got) or 'none'})": got == expect,
+    'the agent reported an outcome (an answer or an error)': r.get('answer') is not None or 'error' in r or r.get('errors'),
+}
+for k, ok in checks.items():
+    print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+print(f"   finding: {len(pays)} payment(s); violations: {[v['message'][:80] for v in r.get('violations', [])] or 'none'};"
+      f" runtime exit {r.get('code')}; answer: {str(r.get('answer'))[:100]}")
+sys.exit(0 if all(checks.values()) else 1)
+PY
+  done
+fi
+if grep -q 'PerDay.*FreeTier' $out/agent.err 2>/dev/null; then
+  echo "   NOTE the free model quota for the day ran out during this run: live results after that mean nothing"
 fi
 [ $fail = 0 ] && echo "e2e: PASS" || { echo "e2e: FAIL"; exit 1; }

@@ -36,6 +36,9 @@ class Shop(BaseHTTPRequestHandler):
         if self.path == '/api/cart':
             cart.append(json.loads(self.rfile.read(int(self.headers['content-length']))))
             self.reply({'count': len(cart), 'order': random.randint(1000, 9999)})
+        elif self.path == '/api/pay':
+            self.rfile.read(int(self.headers['content-length']))
+            self.reply({'paid': True})
         else:
             self.send_error(404)
 

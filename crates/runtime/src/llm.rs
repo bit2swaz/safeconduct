@@ -28,8 +28,11 @@ fn upstream(path: &str) -> &'static str {
 /// `cdp`: our CDP endpoint (127.0.0.1:port). With HTTP_PROXY set, agents send their CDP traffic
 /// here too (Browser Use does); it is passed through untouched.
 pub async fn serve(listener: TcpListener, net: Arc<Net>, cdp: String) {
-    // The agent sees redirects as recorded, and follows them itself.
-    let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    // The agent sees redirects as recorded, and follows them itself. No env proxy: the runtime is
+    // the agent's HTTP_PROXY, and a runtime started from the agent's process (the clients do that)
+    // inherits it, so it would send each request back to itself.
+    // ponytail: no upstream proxy support; add a --proxy flag when someone needs one.
+    let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).no_proxy().build().unwrap();
     let own = Arc::new(listener.local_addr().unwrap().to_string());
     let cdp = Arc::new(cdp);
     loop {
@@ -147,6 +150,7 @@ fn from_entry(e: &serde_json::Value) -> Result<Response, Error> {
 async fn site_call(
     net: &Net, http: &reqwest::Client, method: &str, url: &str, headers: &[(String, String)], body: Vec<u8>, post: Option<&str>,
 ) -> Result<Response, Error> {
+    net.request(method, url, post);
     if net.recording() {
         let resp = forward(http, method, url, headers, body).await?;
         let mut e = json!({ "method": method, "url": url, "status": resp.0, "headers": stored(&resp.1), "body": B64.encode(&resp.2) });

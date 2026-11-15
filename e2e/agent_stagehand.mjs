@@ -1,11 +1,16 @@
 // A real Stagehand v4 agent on the replayed shop. The model is Gemini (free tier), via GEMINI_API_KEY.
 // Stagehand runs act()/extract() inside its Chrome extension, which calls the model from the browser.
+// SC_RULES=<recording>: start the runtime here through the TS client, with the built-in rules,
+// and also pay. Then it prints {answer, code, steps, violations, requests}.
 import { readFileSync } from 'node:fs';
 import { localBrowser, Stagehand } from '@browserbasehq/stagehand';
 import { z } from 'zod/v4';
+import { allowedOrigins, noDoublePayment, replay } from '../clients/ts/index.ts';
 const steps = JSON.parse(readFileSync(new URL('steps.json', import.meta.url)));
 
-const browser = await localBrowser.connect({ cdpUrl: 'http://127.0.0.1:9222' });
+const rules = [allowedOrigins([new URL(steps.url).origin]), noDoublePayment('/api/pay')];
+const run = process.env.SC_RULES ? await replay(process.env.SC_RULES, { liveModel: true, rules }) : null;
+const browser = await localBrowser.connect({ cdpUrl: run?.endpoint ?? 'http://127.0.0.1:9222' });
 const stagehand = await Stagehand.create({
   browser,
   model: { modelName: `google/${process.env.GEMINI_MODEL}`, apiKey: process.env.GEMINI_API_KEY },
@@ -25,11 +30,19 @@ try {
   await until(steps.ready, 30000);
   await stagehand.act('add the cheapest product to the cart');
   await until(steps.added, 10000);
+  if (run) {
+    await stagehand.act('pay for the order');
+    await until(steps.paid, 10000);
+  }
   const { data } = await stagehand.extract('the cart count and the order number shown on the page', z.object({ count: z.number(), order: z.string() }));
   out = { answer: JSON.stringify(data) };
 } catch (e) {
   out = { answer: null, error: String(e.message ?? e).slice(0, 300) };
 }
-console.log(JSON.stringify(out));
 await stagehand.close();
 await browser.disconnect();
+if (run) {
+  const code = await run.close();
+  out = { ...out, code, steps: run.steps, violations: run.violations, requests: run.events.filter((e) => e.event === 'request') };
+}
+console.log(JSON.stringify(out));

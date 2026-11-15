@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
@@ -39,6 +39,11 @@ pub struct Net {
     /// Site requests paused and not yet answered, and when the last one was answered. See settle().
     in_flight: AtomicUsize,
     last_answer: Mutex<Instant>,
+    /// The agent sent a command that can start page work since the last step event. See step().
+    acted: AtomicBool,
+    /// The page or the agent's process sent a site request since the last step event.
+    requested: AtomicBool,
+    steps: AtomicUsize,
 }
 
 // Chrome and reqwest hand us the decoded body, so these would describe bytes we no longer have.
@@ -81,6 +86,9 @@ impl Net {
             fuzz: None,
             in_flight: AtomicUsize::new(0),
             last_answer: Mutex::new(Instant::now()),
+            acted: AtomicBool::new(false),
+            requested: AtomicBool::new(false),
+            steps: AtomicUsize::new(0),
         }
     }
 
@@ -101,6 +109,33 @@ impl Net {
     /// its requests may not be visible yet, so the next command waits a full SETTLE.
     pub fn touched(&self) {
         *self.last_answer.lock().unwrap() = Instant::now();
+    }
+
+    /// The agent sent a command that can start page work (see touched()).
+    pub fn acted(&self) {
+        self.acted.store(true, Ordering::SeqCst);
+        self.touched();
+    }
+
+    /// Call after settle(), before the agent's next command. If the agent acted and the page
+    /// sent requests since the last step, the page is now quiet: that step is over. Rules
+    /// (clients/) run on each step event. Steps with no requests are not counted: how many of
+    /// them an agent makes (setup calls, DOM reads) depends on timing, and they give rules nothing.
+    pub fn step(&self) {
+        if self.requested.load(Ordering::SeqCst) && self.acted.swap(false, Ordering::SeqCst) {
+            self.requested.store(false, Ordering::SeqCst);
+            println!("{}", json!({ "event": "step", "n": self.steps.fetch_add(1, Ordering::SeqCst) + 1 }));
+        }
+    }
+
+    /// Every site request the page or the agent's process sends, in every mode, before it is answered.
+    pub fn request(&self, method: &str, url: &str, post: Option<&str>) {
+        let mut e = json!({ "event": "request", "method": method, "url": url });
+        if let Some(post) = post {
+            e["post"] = json!(post);
+        }
+        self.requested.store(true, Ordering::SeqCst);
+        println!("{e}");
     }
 
     pub fn record(path: &str) -> Net {
@@ -278,6 +313,9 @@ impl Net {
         let req = &p["request"];
         let (method, url) = (req["method"].as_str().unwrap(), req["url"].as_str().unwrap());
         let post = req["postData"].as_str();
+        if !llm {
+            self.request(method, url, post);
+        }
         if self.recording() {
             let status = p["responseStatusCode"].as_u64().unwrap_or(200);
             let headers: Vec<&Value> = p["responseHeaders"]

@@ -27,6 +27,8 @@ async def main():
     until(steps['ready'])
     h.js(steps['addCheapest'])
     until(steps['added'])
+    h.js(steps['pay'])
+    until(steps['paid'])
     text = h.js(steps['text'])
     # In exact mode the probe is off the recording, so the runtime ends the run right after it.
     probe = h.js(steps['probe']) if '--probe' in sys.argv else None
