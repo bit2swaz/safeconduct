@@ -6,7 +6,7 @@
 //! Record forwards to the real server and saves the response; replay answers from the recording
 //! only. With --live-model, model calls are forwarded and not saved. Agents that call their model
 //! from inside the browser (Stagehand v4) are handled in setup() instead.
-use crate::net::{Net, keep_header};
+use crate::net::{Answer, FAULT_503, Net, keep_header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::json;
@@ -156,12 +156,15 @@ async fn site_call(
         net.save(&e);
         return Ok(resp);
     }
-    match net.next_site(method, url, post).await {
-        Some(e) => {
-            net.delivered(&e);
-            from_entry(&e)
-        }
-        None => Ok((599, vec![], b"off-recording: safeconduct exact mode has no recorded response".to_vec())),
+    let answer = net.answer_site(method, url, post, None).await;
+    if let Answer::Serve(e) | Answer::Error(Some(e)) | Answer::Drop(Some(e)) = &answer {
+        net.delivered(e);
+    }
+    match answer {
+        Answer::Serve(e) => from_entry(&e),
+        Answer::Error(_) => Ok((503, vec![], FAULT_503.as_bytes().to_vec())),
+        Answer::Drop(_) => Err("fuzz: connection dropped".into()), // closes the socket, no reply
+        Answer::Miss => Ok((599, vec![], b"off-recording: safeconduct exact mode has no recorded response".to_vec())),
     }
 }
 

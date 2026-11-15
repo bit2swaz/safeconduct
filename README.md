@@ -16,12 +16,15 @@ npx playwright install chromium            # the browser it drives
 cargo run -- record run.jsonl              # agents use http://127.0.0.1:9222; site and model calls are saved
 cargo run -- replay run.jsonl              # exact mode: the same run again, from run.jsonl only
 cargo run -- replay run.jsonl --live-model # the recorded site, a live model
+cargo run -- replay run.jsonl --fuzz 5     # the recorded site, a live model, seeded faults
 ```
 
 **Exact mode** repeats a whole agent run: the site, the agent's model calls and its own HTTP requests come from the recording, with the site down and no API key.
 - Model calls from inside the browser (Stagehand v4) are caught automatically.
 - An agent that calls its model from its own process points its base URL at the model proxy on port 9223 (`GOOGLE_GEMINI_BASE_URL`, `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`). Set `HTTP_PROXY` to the same port so its own site requests are recorded too.
 - API keys are never stored.
+
+**Fuzz mode** (`--fuzz SEED`, `--fault-rate 0.25`) puts seeded faults on the replayed site: page loads can be slowed or get a popup (a cookie wall) or a banner (injected text that shifts the layout); other requests can be slowed, get a 503 or lose the connection. A request that is not in the recording gets a 503 or a dropped connection, and the run goes on. Each fault prints a `fault` event. The same seed gives the same faults in every run, whatever order requests arrive in.
 
 Every page and worker gets a seeded RNG (`Math.random`, `crypto`) and a clock that starts at 2023-11-14. Each agent command waits until the page is settled, and site responses replay in recorded order.
 A request that is not in the recording prints an `off-recording` event and ends the run (exit code 3). A model prompt that differs from the recording prints `llm-drift`.

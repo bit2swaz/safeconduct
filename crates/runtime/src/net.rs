@@ -8,6 +8,7 @@
 //! Model calls are served strictly in recorded order; a request that differs from the recorded
 //! one is reported as llm-drift. Anything not in the recording stops the run (off-recording).
 use crate::cdp::Cdp;
+use crate::fuzz::{Fault, Fuzz, inject, is_html};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
@@ -25,14 +26,16 @@ pub struct Net {
     record: Option<Mutex<std::fs::File>>,
     /// Site responses per request key. The last one repeats.
     site: Mutex<HashMap<String, VecDeque<Value>>>,
-    /// Replay: per site response in recorded order ("seq"), whether it was delivered. See turn().
-    delivered: Mutex<Vec<bool>>,
+    /// Replay: per site response in recorded order ("seq"): PENDING, CLAIMED or DONE. See turn().
+    order: Mutex<Vec<u8>>,
     /// Model calls in recorded order, and the index of the next one.
     llm: Mutex<(usize, Vec<Value>)>,
     /// Exact mode hit something not in the recording: main() ends the run.
     pub stop: Notify,
     /// Replay the site but let model calls through to the real API (fuzz mode builds on this).
     pub live_model: bool,
+    /// Fuzz mode: seeded faults on site responses; off-recording gets a fault, not the end of the run.
+    pub fuzz: Option<Fuzz>,
     /// Site requests paused and not yet answered, and when the last one was answered. See settle().
     in_flight: AtomicUsize,
     last_answer: Mutex<Instant>,
@@ -62,16 +65,20 @@ const SETTLE: Duration = Duration::from_millis(100);
 const SETTLE_CAP: Duration = Duration::from_secs(3);
 /// How long a replayed response waits for an earlier-recorded one the page has not asked for.
 const ORDER_WAIT: Duration = Duration::from_secs(1);
+const PENDING: u8 = 0;
+const CLAIMED: u8 = 1;
+const DONE: u8 = 2;
 
 impl Net {
     fn new() -> Net {
         Net {
             record: None,
             site: Mutex::default(),
-            delivered: Mutex::default(),
+            order: Mutex::default(),
             llm: Mutex::default(),
             stop: Notify::new(),
             live_model: false,
+            fuzz: None,
             in_flight: AtomicUsize::new(0),
             last_answer: Mutex::new(Instant::now()),
         }
@@ -101,7 +108,7 @@ impl Net {
         Net { record: Some(Mutex::new(file)), live_model: false, ..Net::new() }
     }
 
-    pub fn replay(path: &str, live_model: bool) -> Net {
+    pub fn replay(path: &str, live_model: bool, fuzz: Option<Fuzz>) -> Net {
         let (mut site, mut llm): (HashMap<String, VecDeque<Value>>, Vec<Value>) = Default::default();
         let mut seq = 0;
         for line in std::fs::read_to_string(path).expect("read recording").lines() {
@@ -115,8 +122,8 @@ impl Net {
                 site.entry(k).or_default().push_back(e);
             }
         }
-        let delivered = Mutex::new(vec![false; seq]);
-        Net { site: Mutex::new(site), delivered, llm: Mutex::new((0, llm)), live_model, ..Net::new() }
+        let order = Mutex::new(vec![PENDING; seq]);
+        Net { site: Mutex::new(site), order, llm: Mutex::new((0, llm)), live_model: live_model || fuzz.is_some(), fuzz, ..Net::new() }
     }
 
     pub fn recording(&self) -> bool {
@@ -144,8 +151,39 @@ impl Net {
     }
 
     fn off_recording(&self, what: Value) {
-        println!("{}", json!({ "event": "off-recording", "request": what }));
-        self.stop.notify_one();
+        println!("{}", json!({ "event": "off-recording", "request": what, "run_ends": self.fuzz.is_none() }));
+        if self.fuzz.is_none() {
+            self.stop.notify_one();
+        }
+    }
+
+    /// Replay mode: how to answer one site request, with fuzz faults applied.
+    /// `document`: a page load (Chrome's resourceType), or None to judge by the recorded content type.
+    /// Call delivered() on the recorded entry (if any) once the answer is handed over.
+    pub async fn answer_site(&self, method: &str, url: &str, post: Option<&str>, document: Option<bool>) -> Answer {
+        let hit = self.next_site(method, url, post).await;
+        let Some(fuzz) = &self.fuzz else {
+            return hit.map_or(Answer::Miss, Answer::Serve);
+        };
+        let document = document.unwrap_or_else(|| hit.as_ref().is_some_and(is_html));
+        let fault = fuzz.fault(&key(method, url, post), document, hit.is_some());
+        match (fault, hit) {
+            (Fault::Error, hit) => Answer::Error(hit),
+            (Fault::Drop, hit) => Answer::Drop(hit),
+            (Fault::Delay(d), Some(e)) => {
+                // A slow response must not hold up the ones behind it: give up the turn first.
+                self.delivered(&e);
+                tokio::time::sleep(d).await;
+                Answer::Serve(e)
+            }
+            (f @ (Fault::Popup | Fault::Banner), Some(mut e)) => {
+                let html = String::from_utf8_lossy(&B64.decode(e["body"].as_str().unwrap_or("")).unwrap_or_default()).into_owned();
+                e["body"] = json!(B64.encode(inject(&html, &f)));
+                Answer::Serve(e)
+            }
+            (_, Some(e)) => Answer::Serve(e),
+            (_, None) => Answer::Miss,
+        }
     }
 
     /// Record mode: save one model call.
@@ -184,7 +222,11 @@ impl Net {
         };
         match &hit {
             Some(e) => {
-                self.turn(e["seq"].as_u64().unwrap_or(0) as usize).await;
+                let seq = e["seq"].as_u64().unwrap_or(0) as usize;
+                if self.order.lock().unwrap()[seq] == PENDING {
+                    self.order.lock().unwrap()[seq] = CLAIMED;
+                }
+                self.turn(seq).await;
                 println!("{}", json!({ "event": "served", "method": method, "url": url }));
             }
             None => self.off_recording(json!({ "method": method, "url": url })),
@@ -195,14 +237,20 @@ impl Net {
     /// Answer site requests in recorded order. Requests the page sends at the same moment
     /// (a fetch and a worker script) reach us in either order under load; answered as they
     /// come, the page would see its responses land in a different order run to run.
-    /// ponytail: waits at most ORDER_WAIT for an earlier response the page never asks for
-    /// (then gives up on it), so a page that skips a request is slower, never stuck.
+    /// An earlier response the page has not asked for after ORDER_WAIT is skipped (the page may
+    /// never ask: it got a fault, or the agent did less). Earlier responses already being answered
+    /// (CLAIMED) are always waited for, so two late requests never race each other.
     async fn turn(&self, seq: usize) {
         let start = Instant::now();
-        while !self.delivered.lock().unwrap()[..seq].iter().all(|d| *d) {
-            if start.elapsed() > ORDER_WAIT {
-                self.delivered.lock().unwrap()[..seq].iter_mut().for_each(|d| *d = true);
-                return;
+        loop {
+            {
+                let mut order = self.order.lock().unwrap();
+                if order[..seq].iter().all(|s| *s == DONE) {
+                    return;
+                }
+                if start.elapsed() > ORDER_WAIT {
+                    order[..seq].iter_mut().filter(|s| **s == PENDING).for_each(|s| *s = DONE);
+                }
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -210,7 +258,7 @@ impl Net {
 
     pub fn delivered(&self, e: &Value) {
         if let Some(seq) = e["seq"].as_u64() {
-            self.delivered.lock().unwrap()[seq as usize] = true;
+            self.order.lock().unwrap()[seq as usize] = DONE;
         }
     }
 
@@ -266,20 +314,36 @@ impl Net {
             cdp.call(cmd, params, session).await.ok();
             return;
         }
-        let hit = if llm { self.next_llm(method, url, post.unwrap_or("")) } else { self.next_site(method, url, post).await };
-        let (cmd, params) = match &hit {
-            Some(e) if e.get("error").is_some() => ("Fetch.failRequest", json!({ "requestId": id, "errorReason": e["error"] })),
-            Some(e) => (
+        let answer = if llm {
+            self.next_llm(method, url, post.unwrap_or("")).map_or(Answer::Miss, Answer::Serve)
+        } else {
+            self.answer_site(method, url, post, Some(p["resourceType"] == "Document")).await
+        };
+        let (cmd, params) = match &answer {
+            Answer::Serve(e) if e.get("error").is_some() => ("Fetch.failRequest", json!({ "requestId": id, "errorReason": e["error"] })),
+            Answer::Serve(e) => (
                 "Fetch.fulfillRequest",
                 json!({ "requestId": id, "responseCode": e["status"], "responseHeaders": e["headers"], "body": e["body"] }),
             ),
-            None => ("Fetch.failRequest", json!({ "requestId": id, "errorReason": "BlockedByClient" })),
+            Answer::Error(_) => ("Fetch.fulfillRequest", json!({ "requestId": id, "responseCode": 503, "body": B64.encode(FAULT_503) })),
+            Answer::Drop(_) => ("Fetch.failRequest", json!({ "requestId": id, "errorReason": "ConnectionReset" })),
+            Answer::Miss => ("Fetch.failRequest", json!({ "requestId": id, "errorReason": "BlockedByClient" })),
         };
         cdp.call(cmd, params, session).await.ok();
-        if let Some(e) = &hit {
+        if let Answer::Serve(e) | Answer::Error(Some(e)) | Answer::Drop(Some(e)) = &answer {
             self.delivered(e); // only now: the next one in line must not overtake this on the wire
         }
     }
+}
+
+pub const FAULT_503: &str = "safeconduct fuzz: 503 Service Unavailable";
+
+/// How a replayed request is answered. Error and Drop carry the recorded entry they replaced.
+pub enum Answer {
+    Serve(Value),
+    Error(Option<Value>),
+    Drop(Option<Value>),
+    Miss,
 }
 
 /// Where two strings first differ, with a little context, to explain an llm-drift event.

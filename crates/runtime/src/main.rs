@@ -8,6 +8,7 @@
 //!
 //! CDP state is per session, so the agent never sees our commands, replies or events.
 mod cdp;
+mod fuzz;
 mod llm;
 mod net;
 
@@ -21,9 +22,11 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-const USAGE: &str = "usage: safeconduct record|replay <file.jsonl> [--port 9222] [--seed 42] [--live-model]
+const USAGE: &str = "usage: safeconduct record|replay <file.jsonl> [--port 9222] [--seed 42] [--live-model] [--fuzz SEED [--fault-rate 0.25]]
   CDP on --port, model proxy on --port + 1. Replay is exact mode: off-recording ends the run (exit 3).
-  --live-model: replay the site only; model calls go to the real API.";
+  --live-model: replay the site only; model calls go to the real API.
+  --fuzz SEED: --live-model plus seeded faults (delay, 503, drop, popup, banner) on site responses.
+    Off-recording gets a fault and the run goes on. The same seed gives the same faults.";
 /// 2023-11-14T22:13:20Z. Every run starts its clock here.
 const T0: u64 = 1_700_000_000_000;
 
@@ -36,7 +39,13 @@ async fn main() {
     let (port, seed) = (flag("--port", 9222) as u16, flag("--seed", 42));
     let net = Arc::new(match (args.first().map(String::as_str), args.get(1)) {
         (Some("record"), Some(path)) => Net::record(path),
-        (Some("replay"), Some(path)) => Net::replay(path, args.iter().any(|a| a == "--live-model")),
+        (Some("replay"), Some(path)) => {
+            let fuzz = args.iter().position(|a| a == "--fuzz").map(|_| {
+                let rate = args.iter().position(|a| a == "--fault-rate").map_or(0.25, |i| args[i + 1].parse().expect(USAGE));
+                fuzz::Fuzz::new(flag("--fuzz", 0), rate)
+            });
+            Net::replay(path, args.iter().any(|a| a == "--live-model"), fuzz)
+        }
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);

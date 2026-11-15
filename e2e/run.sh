@@ -5,6 +5,9 @@
 #   B1a    real LLM agents (Stagehand v4, Browser Use 1.0) do a task on the replayed shop.  [--live]
 #   B1b-1  exact mode: replay a real agent run (site + model + the agent's own site requests)
 #          twice, with the site down and an invalid API key. Both must repeat it exactly.
+#   B1b-2  fuzz mode: seeded faults on the replayed shop. The same seed gives the same faults and
+#          the same page; off-recording gets a fault and the run goes on. With --live, real agents
+#          run into a cookie-wall popup (seed 5).
 #
 # Usage: e2e/run.sh                 agent runs come from e2e/fixtures: 0 model calls, no key
 #        e2e/run.sh --live          fresh live agent runs; close every phase with this
@@ -97,8 +100,9 @@ if [ $LIVE = 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then echo "--live needs GEMINI
 
 if [ $LIVE = 1 ]; then
   for name in stagehand browser-use; do
-    # A live model can simply get the task wrong. That is retried once; a runtime problem
-    # (anything off the recording) is never retried.
+    # A live model varies: it can get the task wrong, or take an action the recording does not
+    # have (off-recording). So this check gets one retry; a runtime bug fails both tries.
+    # The exact-mode and fuzz-determinism checks never retry.
     for try in 1 2; do
       echo "== B1a real agent: $name ($GEMINI_MODEL, live model) on the replayed shop$([ $try = 2 ] && echo ', retry')"
       start replay $out/shop.jsonl $out/agent-$name-$try.log --live-model
@@ -123,9 +127,9 @@ checks = {
 for name, ok in checks.items():
     print(f"   {'ok  ' if ok else 'FAIL'} {name}")
 print('   answer:', str(answer.get('answer'))[:200])
-sys.exit(0 if all(checks.values()) else 1 if off else 2)  # 2 = the model got it wrong
+sys.exit(0 if all(checks.values()) else 2)  # 2 = retry once
 PY
-      [ $res = 2 ] && [ $try = 1 ] && { echo "   (the live model missed the task; retrying once)"; continue; }
+      [ $res = 2 ] && [ $try = 1 ] && { echo "   (the live model missed the task or left the recording; retrying once)"; continue; }
       [ $res = 0 ] || fail=1
       break
     done
@@ -200,4 +204,62 @@ PY
     echo "   saved as fixture"
   fi
 done
+echo "== B1b-2 fuzz mode: same seed, same faults (Playwright, rate 0.5)"
+for run in 3a 3b 4; do
+  start replay $out/shop.jsonl $out/fuzz-$run.log --fuzz ${run%[ab]} --fault-rate 0.5
+  drive playwright --fuzz $([ $run = 4 ] && echo --probe) | tail -1 > $out/fuzz-$run.json
+  stop; echo $code > $out/fuzz-$run.code
+done
+python3 - $out <<'PY' || fail=1
+import json, sys
+out = sys.argv[1]
+def faults(run):
+    return [(e['kind'], e['request']) for e in map(json.loads, open(f'{out}/fuzz-{run}.log')) if e.get('event') == 'fault']
+def page(run):
+    return json.load(open(f'{out}/fuzz-{run}.json'))
+probe_faults = [f for f in faults('4') if f[1].endswith('/api/never-recorded')]
+off = [e for e in map(json.loads, open(f'{out}/fuzz-4.log')) if e.get('event') == 'off-recording']
+checks = {
+    f"seed 3 injects faults ({', '.join(k for k, _ in faults('3a'))})": len(faults('3a')) > 0,
+    'seed 3 twice: the same faults in the same order': faults('3a') == faults('3b'),
+    'seed 3 twice: the same page': page('3a')['text'] == page('3b')['text'],
+    'seed 4 gives different faults': faults('4')[:len(faults('3a'))] != faults('3a'),
+    f"off-recording gets a fault ({page('4')['probe']}), not the end of the run": len(probe_faults) == 1 and off and not off[0]['run_ends'] and open(f'{out}/fuzz-4.code').read().strip() == '0',
+}
+for k, ok in checks.items():
+    print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+sys.exit(0 if all(checks.values()) else 1)
+PY
+
+if [ $LIVE = 1 ]; then
+  for name in stagehand browser-use; do
+    echo "== B1b-2 fuzz mode: real agent $name ($GEMINI_MODEL, live model) vs a cookie-wall popup (seed 5)"
+    start replay $out/shop.jsonl $out/fuzz-agent-$name.log --fuzz 5 --fault-rate 0.3
+    agent $name > $out/fuzz-agent-$name.json || true
+    stop; echo $code > $out/fuzz-agent-$name.code
+    python3 - $out $name <<'PY' || fail=1
+import json, sys
+out, name = sys.argv[1:3]
+events = [json.loads(l) for l in open(f'{out}/fuzz-agent-{name}.log') if l.startswith('{"')]
+faults = [e for e in events if e['event'] == 'fault']
+try:
+    result = json.load(open(f'{out}/fuzz-agent-{name}.json'))
+except ValueError:
+    result = {}
+answer = result.get('answer')
+cart = [e for e in events if e['event'] == 'served' and e.get('url', '').endswith('/api/cart')]
+checks = {
+    f"the agent's page got the cookie wall ({len(faults)} faults in its run)": any(f['kind'] == 'popup' and f['request'].endswith(':8001/') for f in faults),
+    'the run went to the end (runtime exit 0)': open(f'{out}/fuzz-agent-{name}.code').read().strip() == '0',
+    'the agent reported an outcome (an answer or an error)': answer is not None or 'error' in result,
+}
+for k, ok in checks.items():
+    print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+# What fuzzing is for: how the agent copes. A finding, not a test failure.
+print(f"   finding: {'added to cart through the faults' if cart else 'did NOT add to cart'}; answer: {str(answer)[:120]}"
+      + (f"; error: {result['error'][:120]}" if result.get('error') else ''))
+sys.exit(0 if all(checks.values()) else 1)
+PY
+  done
+fi
 [ $fail = 0 ] && echo "e2e: PASS" || { echo "e2e: FAIL"; exit 1; }

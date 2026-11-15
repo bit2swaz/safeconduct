@@ -1,8 +1,9 @@
 // Drive the shop through Playwright or Stagehand, attached over CDP like any agent would.
-// Usage: node drive.mjs playwright|stagehand [--probe]   -> prints {"text", "probe"}
+// Usage: node drive.mjs playwright|stagehand [--probe] [--fuzz]   -> prints {"text", "probe"}
+// --fuzz: the page may never get ready (a fault dropped its data): wait 4s at most, never throw.
 import { readFileSync } from 'node:fs';
 const steps = JSON.parse(readFileSync(new URL('steps.json', import.meta.url)));
-const [client, probe] = [process.argv[2], process.argv.includes('--probe')];
+const [client, probe, fuzz] = [process.argv[2], process.argv.includes('--probe'), process.argv.includes('--fuzz')];
 const CDP = 'http://127.0.0.1:9222';
 
 let page, done;
@@ -20,13 +21,15 @@ if (client === 'playwright') {
 }
 const js = (expr) => page.evaluate(expr);
 const until = async (expr) => {
-  for (let i = 0; i < 100; i++) { if (await js(expr)) return; await new Promise((r) => setTimeout(r, 100)); }
-  throw new Error('timed out: ' + expr);
+  for (let i = 0; i < (fuzz ? 40 : 100); i++) { if (await js(expr)) return true; await new Promise((r) => setTimeout(r, 100)); }
+  if (!fuzz) throw new Error('timed out: ' + expr);
+  return false;
 };
 await page.goto(steps.url);
-await until(steps.ready);
-await js(steps.addCheapest);
-await until(steps.added);
+if (await until(steps.ready)) {
+  await js(steps.addCheapest);
+  await until(steps.added);
+}
 const text = await js(steps.text);
 // In exact mode the probe is off the recording, so the runtime ends the run right after it.
 console.log(JSON.stringify({ text, probe: probe ? await js(steps.probe) : null }));

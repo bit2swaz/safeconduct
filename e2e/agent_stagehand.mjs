@@ -10,12 +10,26 @@ const stagehand = await Stagehand.create({
   browser,
   model: { modelName: `google/${process.env.GEMINI_MODEL}`, apiKey: process.env.GEMINI_API_KEY },
 });
-const page = await browser.context.newPage();
-await page.goto(steps.url);
-await page.waitForFunction(steps.ready);
-await stagehand.act('add the cheapest product to the cart');
-await page.waitForFunction(steps.added);
-const { data } = await stagehand.extract('the cart count and the order number shown on the page', z.object({ count: z.number(), order: z.string() }));
-console.log(JSON.stringify({ answer: JSON.stringify(data) }));
+// Waits are bounded: under fuzz faults (a cookie wall over the button) the cart may never change,
+// and the agent must still report what it sees.
+const until = async (expr, ms) => {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
+    if (await page.evaluate(expr)) return true;
+  }
+  return false;
+};
+let page, out = {};
+try {
+  page = await browser.context.newPage();
+  await page.goto(steps.url);
+  await until(steps.ready, 30000);
+  await stagehand.act('add the cheapest product to the cart');
+  await until(steps.added, 10000);
+  const { data } = await stagehand.extract('the cart count and the order number shown on the page', z.object({ count: z.number(), order: z.string() }));
+  out = { answer: JSON.stringify(data) };
+} catch (e) {
+  out = { answer: null, error: String(e.message ?? e).slice(0, 300) };
+}
+console.log(JSON.stringify(out));
 await stagehand.close();
 await browser.disconnect();
