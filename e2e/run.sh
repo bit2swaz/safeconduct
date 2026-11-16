@@ -15,6 +15,9 @@
 #   B1b-4  fingerprints: the same behavior gives the same fingerprint (record, replays, both
 #          clients). shrink: a naive buyer pays twice under 6 seeded faults; shrink finds the one
 #          fault that causes it (the dropped payment).
+#   Providers  exact mode with the OpenAI and Anthropic SDKs (plain, streamed, a tool call), and
+#          a real Browser Use agent with its model in OpenAI shape (in B1b-1). A chunked request
+#          body is read in full.
 #
 # Usage: e2e/run.sh                 agent runs come from e2e/fixtures: 0 model calls, no key
 #        e2e/run.sh --live          fresh live agent runs; close every phase with this
@@ -65,6 +68,8 @@ agent() { # agent <name>: one real agent task, prints {"answer": ...}
     stagehand) timeout 180 node agent_stagehand.mjs ;;
     # Model calls and the agent's own site requests both go through the runtime.
     browser-use) GOOGLE_GEMINI_BASE_URL=$LLM HTTP_PROXY=$LLM http_proxy=$LLM timeout 180 uv run -q agent_bu.py ;;
+    # The same agent with its model in OpenAI shape (Gemini's OpenAI-compatible API).
+    browser-use-openai) SC_OPENAI=1 GOOGLE_GEMINI_BASE_URL=$LLM HTTP_PROXY=$LLM http_proxy=$LLM timeout 180 uv run -q agent_bu.py ;;
   esac 2>> $out/agent.err | tail -1
 }
 fail=0
@@ -146,7 +151,7 @@ else
   echo "== B1a real agents: skipped (they need a live model: --live)"
 fi
 
-for name in stagehand browser-use; do
+for name in stagehand browser-use browser-use-openai; do
   rec=fixtures/exact-$name.jsonl answer0=fixtures/exact-$name.answer.json
   if [ $LIVE = 1 ]; then
     echo "== B1b-1 exact mode: $name (fresh live recording)"
@@ -303,6 +308,45 @@ for k, ok in checks.items():
 sys.exit(0 if all(checks.values()) else 1)
 PY
 
+echo "== Providers: OpenAI and Anthropic SDKs, exact replay with an invalid key"
+for shape in openai anthropic; do
+  start replay fixtures/providers-$shape.jsonl $out/providers-$shape.log
+  GEMINI_API_KEY=invalid timeout 120 uv run -q providers.py $shape 2>> $out/providers.err | tail -1 > $out/providers-$shape.json || true
+  stop; echo $code > $out/providers-$shape.code
+done
+# A chunked request body (no content-length), sent as the Anthropic SDK's first request.
+start replay fixtures/providers-anthropic.jsonl $out/providers-chunked.log
+head -1 fixtures/providers-anthropic.jsonl | python3 -c "import json,sys; print(json.load(sys.stdin)['postData'], end='')" \
+  | curl -s -m 20 -X POST $LLM/v1/messages -H 'transfer-encoding: chunked' -H 'content-type: application/json' -H 'x-api-key: invalid' --data-binary @- > $out/providers-chunked.json || true
+stop
+python3 - $out <<'PY' || fail=1
+import json, sys
+out = sys.argv[1]
+def result(f):
+    try:
+        return json.load(open(f))
+    except ValueError:
+        return {}
+def events(shape):
+    return [json.loads(l) for l in open(f'{out}/providers-{shape}.log') if l.startswith('{"')]
+want = 'the lamp is cheapest'
+checks = {}
+for shape in ('openai', 'anthropic'):
+    r, ev = result(f'{out}/providers-{shape}.json'), events(shape)
+    clean = not any(e['event'] in ('llm-drift', 'off-recording') for e in ev) and open(f'{out}/providers-{shape}.code').read().strip() == '0'
+    checks[f'{shape}: plain answer replayed' + (f" ({r['error'][:80]})" if 'error' in r else '')] = r.get('plain', '').strip() == want
+    checks[f'{shape}: streamed answer replayed'] = r.get('stream', '').strip() == want
+    if shape == 'openai':
+        checks['openai: tool call replayed'] = r.get('tool') == [['add_to_cart', '{"id":"lamp"}']]
+    checks[f'{shape}: no drift, nothing off the recording'] = clean
+ev = events('chunked')
+checks['a chunked request body matches its recorded request'] = (
+    want in json.dumps(result(f'{out}/providers-chunked.json')) and not any(e['event'] == 'llm-drift' for e in ev))
+for k, ok in checks.items():
+    print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+sys.exit(0 if all(checks.values()) else 1)
+PY
+
 echo "== B1b-4 fingerprints and shrink"
 $bin shrink -- node shrink_test.mjs fixtures/shop.jsonl 299 0.5 2>> $out/shrink.err > $out/shrink.log || true
 $bin shrink -- true > $out/shrink-pass.log 2>&1 && echo 0 > $out/shrink-pass.code || echo $? > $out/shrink-pass.code
@@ -319,7 +363,7 @@ def fp(f):
 shrunk = [json.loads(l) for l in open(f'{out}/shrink.log') if '"shrunk"' in l]
 s = shrunk[0] if shrunk else {}
 kinds = [(f['kind'], f['request']) for f in s.get('faults', [])]
-exact = {n: [end(f'{out}/exact-{n}-{i}.log').get('fingerprint') for i in (1, 2)] for n in ('stagehand', 'browser-use')}
+exact = {n: [end(f'{out}/exact-{n}-{i}.log').get('fingerprint') for i in (1, 2)] for n in ('stagehand', 'browser-use', 'browser-use-openai')}
 checks = {
     f"record, TS client and Python client runs share one fingerprint ({end(f'{out}/record.log').get('fingerprint')})":
         end(f'{out}/record.log').get('fingerprint') == fp(f'{out}/rules-ts-clean.json') == fp(f'{out}/rules-py-clean.json') is not None,

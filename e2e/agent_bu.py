@@ -4,6 +4,7 @@
 # ///
 """A real Browser Use 1.0 agent on the replayed shop. The model is Gemini (free tier), via GEMINI_API_KEY.
 llm must be explicit: without it, browser-use 1.0 uses (and bills) its cloud model.
+SC_OPENAI=1: call the model in OpenAI shape (Gemini's OpenAI-compatible API, through the runtime's proxy).
 SC_RULES=<recording>: start the runtime here through the Python client (PYTHONPATH=../clients/py),
 with the built-in rules, and also pay. Then it prints {answer, errors, code, steps, violations, requests}."""
 import asyncio, json, os
@@ -25,7 +26,12 @@ async def main():
         rules = [allowed_origins(['http://127.0.0.1:8001']), no_double_payment('/api/pay')]
         run = replay(os.environ['SC_RULES'], live_model=True, rules=rules)
     browser = Browser(cdp_url=run.endpoint if run else 'http://127.0.0.1:9222')
-    agent = Agent(PAY_TASK if run else TASK, llm=f"google:{os.environ['GEMINI_MODEL']}", browser=browser)
+    llm = f"google:{os.environ['GEMINI_MODEL']}"
+    if os.environ.get('SC_OPENAI'):
+        from browser_use import ChatOpenAI
+        proxy = os.environ['GOOGLE_GEMINI_BASE_URL']  # the runtime's model proxy
+        llm = ChatOpenAI(os.environ['GEMINI_MODEL'], base_url=f'{proxy}/v1beta/openai/', api_key=os.environ['GEMINI_API_KEY'])
+    agent = Agent(PAY_TASK if run else TASK, llm=llm, browser=browser)
     result = await agent.run(max_steps=15, timeout=300)
     out = {'answer': result.final_result(), 'errors': result.errors()}
     if run:

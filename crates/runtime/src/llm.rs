@@ -55,7 +55,7 @@ async fn handle(sock: TcpStream, net: &Net, http: &reqwest::Client, own: &str, c
     r.read_line(&mut line).await?;
     let mut parts = line.split(' ');
     let (method, path) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("/").to_string());
-    let (mut headers, mut len) = (Vec::new(), 0);
+    let (mut headers, mut len, mut chunked) = (Vec::new(), 0, false);
     loop {
         let mut h = String::new();
         r.read_line(&mut h).await?;
@@ -67,10 +67,14 @@ async fn handle(sock: TcpStream, net: &Net, http: &reqwest::Client, own: &str, c
         if name.eq_ignore_ascii_case("content-length") {
             len = value.trim().parse()?;
         }
+        chunked |= name.eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked");
         headers.push((name.to_string(), value.trim().to_string()));
     }
     let mut body = vec![0; len];
     r.read_exact(&mut body).await?;
+    if chunked {
+        body = read_chunked(&mut r).await?; // a streamed request body: no content-length
+    }
     let post = String::from_utf8_lossy(&body).into_owned();
     // As an HTTP proxy we get absolute URLs. Addressed to us = a model call; anything else = the site.
     let (site, path) = match path.strip_prefix("http://") {
@@ -115,13 +119,36 @@ async fn handle(sock: TcpStream, net: &Net, http: &reqwest::Client, own: &str, c
     Ok(())
 }
 
+/// An HTTP/1.1 chunked body: hex size lines, each followed by that many bytes, until size 0.
+async fn read_chunked(r: &mut BufReader<TcpStream>) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::new();
+    loop {
+        let mut size = String::new();
+        r.read_line(&mut size).await?;
+        let size = usize::from_str_radix(size.trim().split(';').next().unwrap_or(""), 16)?;
+        if size == 0 {
+            loop {
+                // trailers, then the empty line that ends the body
+                let mut t = String::new();
+                if r.read_line(&mut t).await? == 0 || t.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+        let start = body.len();
+        body.resize(start + size + 2, 0); // the chunk and its CRLF
+        r.read_exact(&mut body[start..]).await?;
+        body.truncate(start + size);
+    }
+}
+
 type Response = (u16, Vec<(String, String)>, Vec<u8>);
 
 /// Forward a request to the real server, keeping the agent's headers except hop-by-hop ones.
 async fn forward(http: &reqwest::Client, method: &str, url: &str, headers: &[(String, String)], body: Vec<u8>) -> Result<Response, Error> {
     let mut req = http.request(method.parse()?, url).body(body);
     for (name, value) in headers {
-        if !["host", "content-length", "accept-encoding", "connection", "proxy-connection"].contains(&name.to_ascii_lowercase().as_str()) {
+        if !["host", "content-length", "transfer-encoding", "accept-encoding", "connection", "proxy-connection"].contains(&name.to_ascii_lowercase().as_str()) {
             req = req.header(name, value);
         }
     }

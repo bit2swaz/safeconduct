@@ -78,7 +78,16 @@ The same seed (`--fuzz 5`) gives the same faults on each run. Use `--fault-rate 
 
 If your agent calls its model from inside the browser (Stagehand v4), safeconduct records the calls automatically.
 
-If your agent calls its model from its own process, point the model base URL to the model proxy on port 9223. Use `GOOGLE_GEMINI_BASE_URL`, `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`. Also set `HTTP_PROXY` to port 9223, so that safeconduct records the site requests of the agent process. safeconduct never saves API keys.
+If your agent calls its model from its own process, point the model base URL to the model proxy on port 9223. Also set `HTTP_PROXY` to port 9223, so that safeconduct records the site requests of the agent process. safeconduct never saves API keys.
+
+| Model API | Base URL |
+|---|---|
+| Gemini | `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:9223` |
+| OpenAI | `OPENAI_BASE_URL=http://127.0.0.1:9223/v1` |
+| Anthropic | `ANTHROPIC_BASE_URL=http://127.0.0.1:9223` |
+| Gemini, OpenAI-compatible API | `http://127.0.0.1:9223/v1beta/openai/` |
+
+Plain answers, streamed answers (SSE) and tool calls replay exactly. The tests use the official OpenAI and Anthropic SDKs, and a Browser Use agent with an OpenAI-shaped model.
 
 ## Rules
 
