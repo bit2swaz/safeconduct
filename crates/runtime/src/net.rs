@@ -41,9 +41,8 @@ pub struct Net {
     last_answer: Mutex<Instant>,
     /// The agent sent a command that can start page work since the last step event. See step().
     acted: AtomicBool,
-    /// The page or the agent's process sent a site request since the last step event.
-    requested: AtomicBool,
-    steps: AtomicUsize,
+    /// The request keys of each step so far; the last one is the step in progress.
+    trace: Mutex<Vec<Vec<String>>>,
 }
 
 // Chrome and reqwest hand us the decoded body, so these would describe bytes we no longer have.
@@ -87,8 +86,7 @@ impl Net {
             in_flight: AtomicUsize::new(0),
             last_answer: Mutex::new(Instant::now()),
             acted: AtomicBool::new(false),
-            requested: AtomicBool::new(false),
-            steps: AtomicUsize::new(0),
+            trace: Mutex::new(vec![vec![]]),
         }
     }
 
@@ -122,10 +120,24 @@ impl Net {
     /// (clients/) run on each step event. Steps with no requests are not counted: how many of
     /// them an agent makes (setup calls, DOM reads) depends on timing, and they give rules nothing.
     pub fn step(&self) {
-        if self.requested.load(Ordering::SeqCst) && self.acted.swap(false, Ordering::SeqCst) {
-            self.requested.store(false, Ordering::SeqCst);
-            println!("{}", json!({ "event": "step", "n": self.steps.fetch_add(1, Ordering::SeqCst) + 1 }));
+        let mut trace = self.trace.lock().unwrap(); // held while printing: stdout order = trace order
+        if !trace.last().unwrap().is_empty() && self.acted.swap(false, Ordering::SeqCst) {
+            trace.push(vec![]);
+            println!("{}", json!({ "event": "step", "n": trace.len() - 1 }));
         }
+    }
+
+    /// What the agent did, as one hash: each step's requests, sorted (their order inside a step
+    /// varies run to run). Same fingerprint, same behavior.
+    pub fn fingerprint(&self) -> (String, usize) {
+        let trace = self.trace.lock().unwrap();
+        let steps: Vec<Vec<&String>> = trace.iter().filter(|s| !s.is_empty()).map(|s| {
+            let mut s: Vec<&String> = s.iter().collect();
+            s.sort();
+            s
+        }).collect();
+        let parts: Vec<&[u8]> = steps.iter().flat_map(|s| s.iter().map(|k| k.as_bytes()).chain([b"step".as_slice()])).collect();
+        (format!("{:016x}", crate::fuzz::hash(&parts)), steps.len())
     }
 
     /// Every site request the page or the agent's process sends, in every mode, before it is answered.
@@ -134,7 +146,8 @@ impl Net {
         if let Some(post) = post {
             e["post"] = json!(post);
         }
-        self.requested.store(true, Ordering::SeqCst);
+        let mut trace = self.trace.lock().unwrap();
+        trace.last_mut().unwrap().push(key(method, url, post));
         println!("{e}");
     }
 

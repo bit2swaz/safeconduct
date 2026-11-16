@@ -35,6 +35,8 @@ export type Run = {
   events: Event[];
   violations: Violation[];
   steps: number;
+  /** A hash of what the agent did (each step's requests). Set when the runtime ends. */
+  fingerprint: string;
   /** Stop the runtime, check the last step, and return the runtime's exit code (3 = left the recording). */
   close: () => Promise<number>;
 };
@@ -73,6 +75,7 @@ async function start(args: string[], opts: Options): Promise<Run> {
     events: [],
     violations: [],
     steps: 0,
+    fingerprint: '',
     close: async () => {
       if (proc.exitCode === null) proc.kill('SIGINT');
       const [[code]] = await done;
@@ -90,6 +93,7 @@ async function start(args: string[], opts: Options): Promise<Run> {
         run.llm = e.llm;
         resolve();
       } else if (e.event === 'step') check();
+      else if (e.event === 'end') run.fingerprint = e.fingerprint;
       else run.events.push(e);
     });
     lines.on('close', () => reject(new Error('safeconduct exited before it was ready')));

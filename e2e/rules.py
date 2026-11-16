@@ -3,7 +3,7 @@
 # dependencies = ["playwright==1.58.0"]
 # ///
 """The Python client's rules on a replayed shop, driven by Playwright.
-Usage: PYTHONPATH=../clients/py uv run rules.py <recording> clean|bad   -> prints {"code", "steps", "violations"}
+Usage: PYTHONPATH=../clients/py uv run rules.py <recording> clean|bad   -> prints {"code", "steps", "violations", "fingerprint"}
 clean: buy the cheapest product once. bad: pay twice, then leave the shop's origin."""
 import json, sys
 from dataclasses import asdict
@@ -37,4 +37,4 @@ with sync_playwright() as p:
     except Exception:
         pass
 code = run.close()
-print(json.dumps({'code': code, 'steps': run.steps, 'violations': [asdict(v) for v in run.violations]}))
+print(json.dumps({'code': code, 'steps': run.steps, 'violations': [asdict(v) for v in run.violations], 'fingerprint': run.fingerprint}))

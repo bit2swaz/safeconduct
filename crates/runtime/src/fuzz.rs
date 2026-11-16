@@ -3,7 +3,8 @@
 //! Each fault is decided by hashing (seed, request, how many times this request was seen), never
 //! by timing, so one seed gives the same faults in every run, whatever order requests arrive in.
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -12,6 +13,10 @@ pub struct Fuzz {
     /// Share of requests that get a fault, 0..=1.
     pub rate: f64,
     seen: Mutex<HashMap<String, u64>>,
+    /// SAFECONDUCT_FAULTS=id,id: inject only these faults (`safeconduct shrink` sets it).
+    only: Option<HashSet<String>>,
+    /// SAFECONDUCT_FAULT_LOG=path: also append each fault event to this file (shrink reads it).
+    log: Option<Mutex<std::fs::File>>,
 }
 
 /// What to do with one site request.
@@ -43,7 +48,7 @@ impl Fault {
 
 /// FNV-1a. Not std's DefaultHasher: that may change between Rust versions, and a seed must
 /// keep its fault schedule forever (runs are compared by it).
-fn hash(parts: &[&[u8]]) -> u64 {
+pub fn hash(parts: &[&[u8]]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for p in parts {
         for b in p.iter().chain(&[0xff]) {
@@ -55,7 +60,11 @@ fn hash(parts: &[&[u8]]) -> u64 {
 
 impl Fuzz {
     pub fn new(seed: u64, rate: f64) -> Fuzz {
-        Fuzz { seed, rate, seen: Mutex::default() }
+        let only = std::env::var("SAFECONDUCT_FAULTS").ok().map(|v| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect());
+        let log = std::env::var("SAFECONDUCT_FAULT_LOG").ok().map(|p| {
+            Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(p).expect("open SAFECONDUCT_FAULT_LOG"))
+        });
+        Fuzz { seed, rate, seen: Mutex::default(), only, log }
     }
 
     /// The fault for this request. `document`: the response is an HTML page.
@@ -68,11 +77,12 @@ impl Fuzz {
             *n
         };
         let h = hash(&[&self.seed.to_le_bytes(), key.as_bytes(), &n.to_le_bytes()]);
+        let id = format!("{h:016x}");
         let pick = (h >> 32) % 3;
         let delay = Duration::from_millis(200 + (h >> 40) % 1300);
         let fault = if !recorded {
             if pick == 0 { Fault::Drop } else { Fault::Error }
-        } else if (h % 10_000) as f64 >= self.rate * 10_000.0 {
+        } else if (h % 10_000) as f64 >= self.rate * 10_000.0 || self.only.as_ref().is_some_and(|o| !o.contains(&id)) {
             Fault::None
         } else if document {
             // Not 503 or drop: a page that never loads ends the run instead of testing the agent.
@@ -83,10 +93,16 @@ impl Fuzz {
         if !matches!(fault, Fault::None) {
             let url = key.split('\n').next().unwrap_or("");
             let mut e = json!({ "event": "fault", "kind": fault.name(), "request": url, "nth": n });
+            if recorded {
+                e["id"] = json!(id); // off-recording faults always happen: they have no id to turn off
+            }
             if let Fault::Delay(d) = fault {
                 e["ms"] = json!(d.as_millis());
             }
             println!("{e}");
+            if let Some(log) = &self.log {
+                writeln!(log.lock().unwrap(), "{e}").ok();
+            }
         }
         fault
     }

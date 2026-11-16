@@ -26,8 +26,8 @@
         document.getElementById('order').textContent = `order #${order}`;
         pay.hidden = false;
         pay.onclick = async () => {
-          await fetch('/api/pay', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order }) });
-          paid.textContent = `paid order #${order}`;
+          const r = await fetch('/api/pay', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order }) }).catch(() => null);
+          paid.textContent = r?.ok ? `paid order #${order}` : 'payment failed, try again';
         };
       };
       products.append(li);

@@ -11,6 +11,7 @@ mod cdp;
 mod fuzz;
 mod llm;
 mod net;
+mod shrink;
 
 use cdp::Cdp;
 use futures_util::{SinkExt, StreamExt};
@@ -23,16 +24,27 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const USAGE: &str = "usage: safeconduct record|replay <file.jsonl> [--port 9222] [--seed 42] [--live-model] [--fuzz SEED [--fault-rate 0.25]]
+       safeconduct shrink -- <test command>
   CDP on --port, model proxy on --port + 1. Replay is exact mode: off-recording ends the run (exit 3).
   --live-model: replay the site only; model calls go to the real API.
   --fuzz SEED: --live-model plus seeded faults (delay, 503, drop, popup, banner) on site responses.
-    Off-recording gets a fault and the run goes on. The same seed gives the same faults.";
+    Off-recording gets a fault and the run goes on. The same seed gives the same faults.
+  shrink: run a failing fuzz test again and again to find the fewest faults that still make it fail.";
 /// 2023-11-14T22:13:20Z. Every run starts its clock here.
 const T0: u64 = 1_700_000_000_000;
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("shrink") {
+        match args.iter().position(|a| a == "--").map(|i| &args[i + 1..]) {
+            Some(cmd) if !cmd.is_empty() => std::process::exit(shrink::run(cmd)),
+            _ => {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
+        }
+    }
     let flag = |name: &str, default: u64| -> u64 {
         args.iter().position(|a| a == name).map_or(default, |i| args[i + 1].parse().expect(USAGE))
     };
@@ -114,6 +126,8 @@ async fn main() {
             code = 3;
         }
     }
+    let (fingerprint, steps) = net.fingerprint();
+    println!("{}", json!({ "event": "end", "fingerprint": fingerprint, "steps": steps, "code": code }));
     drop(chrome);
     std::fs::remove_dir_all(profile).ok();
     std::process::exit(code);

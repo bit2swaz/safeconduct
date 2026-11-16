@@ -12,6 +12,9 @@
 #          A clean run has no violations; paying twice and leaving the shop's origin are caught,
 #          at the right steps, by both clients alike. With --live, real agents buy and pay with
 #          the rules on (Stagehand via the TS client, Browser Use via the Python one).
+#   B1b-4  fingerprints: the same behavior gives the same fingerprint (record, replays, both
+#          clients). shrink: a naive buyer pays twice under 6 seeded faults; shrink finds the one
+#          fault that causes it (the dropped payment).
 #
 # Usage: e2e/run.sh                 agent runs come from e2e/fixtures: 0 model calls, no key
 #        e2e/run.sh --live          fresh live agent runs; close every phase with this
@@ -297,6 +300,40 @@ checks['both clients report the same violations at the same steps'] = (
     and [v['message'] for v in result('ts', 'bad')['violations']] == [v['message'] for v in result('py', 'bad')['violations']])
 for k, ok in checks.items():
     print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+sys.exit(0 if all(checks.values()) else 1)
+PY
+
+echo "== B1b-4 fingerprints and shrink"
+$bin shrink -- node shrink_test.mjs fixtures/shop.jsonl 299 0.5 2>> $out/shrink.err > $out/shrink.log || true
+$bin shrink -- true > $out/shrink-pass.log 2>&1 && echo 0 > $out/shrink-pass.code || echo $? > $out/shrink-pass.code
+python3 - $out <<'PY' || fail=1
+import json, sys
+out = sys.argv[1]
+def end(log):  # the runtime's end event: fingerprint and step count
+    return next((json.loads(l) for l in open(log) if l.startswith('{"') and '"end"' in l), {})
+def fp(f):
+    try:
+        return json.load(open(f)).get('fingerprint')
+    except ValueError:
+        return None
+shrunk = [json.loads(l) for l in open(f'{out}/shrink.log') if '"shrunk"' in l]
+s = shrunk[0] if shrunk else {}
+kinds = [(f['kind'], f['request']) for f in s.get('faults', [])]
+exact = {n: [end(f'{out}/exact-{n}-{i}.log').get('fingerprint') for i in (1, 2)] for n in ('stagehand', 'browser-use')}
+checks = {
+    f"record, TS client and Python client runs share one fingerprint ({end(f'{out}/record.log').get('fingerprint')})":
+        end(f'{out}/record.log').get('fingerprint') == fp(f'{out}/rules-ts-clean.json') == fp(f'{out}/rules-py-clean.json') is not None,
+    'exact replays: the same fingerprint twice, for each agent': all(a == b and a for a, b in exact.values()),
+    'fuzz: the same seed gives the same fingerprint': end(f'{out}/fuzz-3a.log').get('fingerprint') == end(f'{out}/fuzz-3b.log').get('fingerprint'),
+    'a different behavior gives a different fingerprint': fp(f'{out}/rules-ts-clean.json') != fp(f'{out}/rules-ts-bad.json'),
+    f"shrink: {s.get('of')} faults down to {kinds} in {s.get('trials')} trials":
+        len(kinds) == 1 and kinds[0][0] in ('drop', 'error') and kinds[0][1].endswith('/api/pay'),
+    'shrink: the result fails again on its own': s.get('reproduces') is True,
+    'shrink: a passing test gives nothing to shrink (exit 1)': open(f'{out}/shrink-pass.code').read().strip() == '1',
+}
+for k, ok in checks.items():
+    print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+print(f"   reproduce: {s.get('reproduce', '')}")
 sys.exit(0 if all(checks.values()) else 1)
 PY
 

@@ -1,5 +1,5 @@
 // The TS client's rules on a replayed shop, driven by Playwright.
-// Usage: node rules.mjs <recording> clean|bad   -> prints {"code", "steps", "violations"}
+// Usage: node rules.mjs <recording> clean|bad   -> prints {"code", "steps", "violations", "fingerprint"}
 // clean: buy the cheapest product once. bad: pay twice, then leave the shop's origin.
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
@@ -24,4 +24,4 @@ if (mode === 'bad') {
 }
 await browser.close().catch(() => {});
 const code = await run.close();
-console.log(JSON.stringify({ code, steps: run.steps, violations: run.violations }));
+console.log(JSON.stringify({ code, steps: run.steps, violations: run.violations, fingerprint: run.fingerprint }));

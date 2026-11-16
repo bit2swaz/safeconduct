@@ -36,6 +36,7 @@ class Run:
         self.proc = subprocess.Popen([bin, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
         atexit.register(self._kill)
         self.rules, self.events, self.violations, self.steps, self._from = list(rules), [], [], 0, 0
+        self.fingerprint = ''  # a hash of what the agent did (each step's requests), set when the runtime ends
         for line in self.proc.stdout:
             if line.startswith('{') and (e := json.loads(line))['event'] == 'ready':
                 self.endpoint, self.llm = e['endpoint'], e['llm']
@@ -52,6 +53,8 @@ class Run:
             e = json.loads(line)
             if e['event'] == 'step':
                 self._check()
+            elif e['event'] == 'end':
+                self.fingerprint = e['fingerprint']
             else:
                 self.events.append(e)
 

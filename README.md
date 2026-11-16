@@ -1,6 +1,6 @@
 # safeconduct
 
-open infrastructure to test, contain and prove what a web agent did, and on whose behalf
+Open infrastructure to test, contain and prove what a web agent did, and on whose behalf
 
 > A *safe-conduct* is a document that lets a traveler pass safely through foreign territory.
 > safeconduct does the same for AI agents on the web.
@@ -106,6 +106,21 @@ print(run.violations)
 
 To write your own rule, write a function `(step, all_events)` that returns a message, or nothing. `step.events` holds the events of that step.
 
+## Fingerprint and shrink
+
+At the end of each run, safeconduct gives the run a **fingerprint**. The fingerprint is a hash of the requests in each step. Two runs with the same fingerprint did the same things. The clients give it as `run.fingerprint`.
+
+**Shrink** finds the cause of a failure. It runs your failing fuzz test again and again, with fewer faults each time. Then it gives the smallest set of faults that still makes the test fail.
+
+1. Write a test that runs your agent on `safeconduct replay --fuzz SEED`. The test must exit with a nonzero code when it fails, for example when a rule breaks.
+2. Run the test through shrink:
+   ```sh
+   safeconduct shrink -- node my_test.mjs
+   ```
+3. Read the `shrunk` event. It gives the faults that cause the failure, and a command that runs the test with only these faults.
+
+Example from `e2e/run.sh`: a buyer gets 6 faults and pays twice. Shrink finds the one fault that causes it: the first payment request lost its connection, and the buyer sent the payment again.
+
 ## Events
 
 safeconduct writes one JSON event per line to stdout:
@@ -120,6 +135,7 @@ safeconduct writes one JSON event per line to stdout:
 | `llm-drift` | A model prompt is different from the recorded prompt. |
 | `fault` | Fuzz mode added a fault. |
 | `unsupported` | The agent process sent an HTTPS request through `HTTP_PROXY`. safeconduct cannot record it. |
+| `end` | The run ended. It gives the fingerprint, the number of steps and the exit code. |
 
 ## Tests
 
