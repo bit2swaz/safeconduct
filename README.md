@@ -117,7 +117,7 @@ To write your own rule, write a function `(step, all_events)` that returns a mes
 
 ## Fingerprint and shrink
 
-At the end of each run, safeconduct gives the run a **fingerprint**. The fingerprint is a hash of the requests in each step. Two runs with the same fingerprint did the same things. The clients give it as `run.fingerprint`.
+At the end of each run, safeconduct gives the run a **fingerprint**. The fingerprint is a hash of all the requests of the run. Two runs with the same fingerprint sent the same requests. The clients give it as `run.fingerprint`.
 
 **Shrink** finds the cause of a failure. It runs your failing fuzz test again and again, with fewer faults each time. Then it gives the smallest set of faults that still makes the test fail.
 
@@ -151,6 +151,8 @@ safeconduct writes one JSON event per line to stdout:
 `e2e/run.sh` tests every part, end to end, with Playwright, Stagehand and Browser Use on a synthetic shop (`sites/shop`). It uses saved agent runs, so it makes no model calls.
 
 `e2e/run.sh --live` uses real agents and a real model (the free Gemini tier). Put `GEMINI_API_KEY` in `.env` first.
+
+`e2e/stress.sh` puts the CPU under full load. It runs several runtimes at the same time and makes sure that they give the same results. Then it runs `e2e/run.sh` again and again, and counts the checks that failed.
 
 ## Plan
 

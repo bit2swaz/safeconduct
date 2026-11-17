@@ -10,7 +10,7 @@ const steps = JSON.parse(readFileSync(new URL('steps.json', import.meta.url)));
 
 const rules = [allowedOrigins([new URL(steps.url).origin]), noDoublePayment('/api/pay')];
 const run = process.env.SC_RULES ? await replay(process.env.SC_RULES, { liveModel: true, rules }) : null;
-const browser = await localBrowser.connect({ cdpUrl: run?.endpoint ?? 'http://127.0.0.1:9222' });
+const browser = await localBrowser.connect({ cdpUrl: run?.endpoint ?? process.env.SC_CDP ?? 'http://127.0.0.1:9222' });
 const stagehand = await Stagehand.create({
   browser,
   model: { modelName: `google/${process.env.GEMINI_MODEL}`, apiKey: process.env.GEMINI_API_KEY },

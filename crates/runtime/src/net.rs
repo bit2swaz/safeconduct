@@ -39,6 +39,10 @@ pub struct Net {
     /// Site requests paused and not yet answered, and when the last one was answered. See settle().
     in_flight: AtomicUsize,
     last_answer: Mutex<Instant>,
+    /// Our CDP sessions on site pages. See settle().
+    targets: Mutex<Vec<String>>,
+    /// Something happened since settle() last asked the pages to finish their work.
+    dirty: AtomicBool,
     /// The agent sent a command that can start page work since the last step event. See step().
     acted: AtomicBool,
     /// The request keys of each step so far; the last one is the step in progress.
@@ -85,6 +89,8 @@ impl Net {
             fuzz: None,
             in_flight: AtomicUsize::new(0),
             last_answer: Mutex::new(Instant::now()),
+            targets: Mutex::default(),
+            dirty: AtomicBool::new(false),
             acted: AtomicBool::new(false),
             trace: Mutex::new(vec![vec![]]),
         }
@@ -94,18 +100,52 @@ impl Net {
     /// Without it, page work (responses landing, scripts reacting) races the agent's commands,
     /// and the agent sees a different page state run to run. Example: Stagehand gets Chrome
     /// DOM node ids that depend on whether a list rendered before or after it called DOM.enable.
-    pub async fn settle(&self) {
+    ///
+    /// Network quiet is not enough: under CPU load a page can get its response and not yet run
+    /// the JavaScript that shows it (Browser Use read "cart: 0" after the cart POST was answered;
+    /// Stagehand saw DOM node ids shifted by one). So once the network is quiet, each page must
+    /// also finish what it has queued: requestIdleCallback runs only when the page's main thread
+    /// has no work left. If that made new requests, start again.
+    /// ponytail: pages only. The same round trip in a worker (awaitPromise) crashes Chrome 156's
+    /// renderer, so a worker starved of CPU can still post its message late.
+    pub async fn settle(&self, cdp: &Cdp) {
         let start = Instant::now();
-        while start.elapsed() < SETTLE_CAP
-            && (self.in_flight.load(Ordering::SeqCst) > 0 || self.last_answer.lock().unwrap().elapsed() < SETTLE)
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        loop {
+            while start.elapsed() < SETTLE_CAP
+                && (self.in_flight.load(Ordering::SeqCst) > 0 || self.last_answer.lock().unwrap().elapsed() < SETTLE)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if start.elapsed() >= SETTLE_CAP || !self.dirty.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            let targets = self.targets.lock().unwrap().clone();
+            let idle = async {
+                for s in &targets {
+                    // A hidden tab gets idle time only rarely: answer at once (the agent is not reading it).
+                    let idle = "new Promise(r => document.hidden ? r() : requestIdleCallback(() => r(), { timeout: 1000 }))";
+                    let script = json!({ "expression": idle, "awaitPromise": true });
+                    cdp.call("Runtime.evaluate", script, Some(s)).await.ok();
+                }
+            };
+            tokio::time::timeout(SETTLE_CAP.saturating_sub(start.elapsed()), idle).await.ok();
         }
+    }
+
+    /// A site page is set up: settle() waits for it too.
+    pub fn add_target(&self, session: &str) {
+        self.targets.lock().unwrap().push(session.to_string());
+    }
+
+    /// Chrome closed a session (the tab or worker is gone).
+    pub fn remove_target(&self, session: &str) {
+        self.targets.lock().unwrap().retain(|s| s != session);
     }
 
     /// An agent command that can start page work (navigate, input, script) was just sent:
     /// its requests may not be visible yet, so the next command waits a full SETTLE.
     pub fn touched(&self) {
+        self.dirty.store(true, Ordering::SeqCst);
         *self.last_answer.lock().unwrap() = Instant::now();
     }
 
@@ -127,17 +167,14 @@ impl Net {
         }
     }
 
-    /// What the agent did, as one hash: each step's requests, sorted (their order inside a step
-    /// varies run to run). Same fingerprint, same behavior.
+    /// What the agent did, as one hash: every request of the run, sorted. Not step by step: a
+    /// step boundary is a timing judgment (settle()), and under heavy load it moved in 1 of 4
+    /// parallel runtimes while the requests stayed the same. Same fingerprint, same requests.
     pub fn fingerprint(&self) -> (String, usize) {
         let trace = self.trace.lock().unwrap();
-        let steps: Vec<Vec<&String>> = trace.iter().filter(|s| !s.is_empty()).map(|s| {
-            let mut s: Vec<&String> = s.iter().collect();
-            s.sort();
-            s
-        }).collect();
-        let parts: Vec<&[u8]> = steps.iter().flat_map(|s| s.iter().map(|k| k.as_bytes()).chain([b"step".as_slice()])).collect();
-        (format!("{:016x}", crate::fuzz::hash(&parts)), steps.len())
+        let mut keys: Vec<&[u8]> = trace.iter().flatten().map(|k| k.as_bytes()).collect();
+        keys.sort();
+        (format!("{:016x}", crate::fuzz::hash(&keys)), trace.iter().filter(|s| !s.is_empty()).count())
     }
 
     /// Every site request the page or the agent's process sends, in every mode, before it is answered.

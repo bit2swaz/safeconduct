@@ -10,7 +10,8 @@ const [file, seed, rate] = process.argv.slice(2);
 const run = await replay(file, { fuzz: Number(seed), faultRate: Number(rate), rules: [noDoublePayment('/api/pay')] });
 const browser = await chromium.connectOverCDP(run.endpoint);
 const page = await browser.contexts()[0].newPage();
-const until = (expr) => page.waitForFunction(expr, null, { timeout: 5000 }).then(() => true, () => false);
+// Long waits: under full CPU load pages are slow, and a timeout would look like a pass.
+const until = (expr) => page.waitForFunction(expr, null, { timeout: 20000 }).then(() => true, () => false);
 try {
   await page.goto(steps.url);
   if ((await until(steps.ready)) && (await page.evaluate(steps.addCheapest)) && (await until(steps.added))) {

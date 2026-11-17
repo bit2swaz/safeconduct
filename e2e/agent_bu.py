@@ -25,7 +25,7 @@ async def main():
         from safeconduct import allowed_origins, no_double_payment, replay
         rules = [allowed_origins(['http://127.0.0.1:8001']), no_double_payment('/api/pay')]
         run = replay(os.environ['SC_RULES'], live_model=True, rules=rules)
-    browser = Browser(cdp_url=run.endpoint if run else 'http://127.0.0.1:9222')
+    browser = Browser(cdp_url=run.endpoint if run else os.environ.get('SC_CDP', 'http://127.0.0.1:9222'))
     llm = f"google:{os.environ['GEMINI_MODEL']}"
     if os.environ.get('SC_OPENAI'):
         from browser_use import ChatOpenAI

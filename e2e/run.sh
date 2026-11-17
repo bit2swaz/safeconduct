@@ -77,7 +77,7 @@ fail=0
 echo "== B1a record (live site)"
 site_up
 start record $out/shop.jsonl $out/record.log
-drive playwright | tail -1 > $out/record.json
+drive playwright | tail -1 > $out/record.json || true
 stop
 site_down
 echo "   $(wc -l < $out/shop.jsonl) responses recorded; site stopped"
@@ -85,7 +85,7 @@ echo "   $(wc -l < $out/shop.jsonl) responses recorded; site stopped"
 for client in playwright stagehand browser-use; do
   echo "== B1a replay via $client"
   start replay $out/shop.jsonl $out/replay-$client.log
-  drive $client --probe | tail -1 > $out/replay-$client.json
+  drive $client --probe | tail -1 > $out/replay-$client.json || true
   stop
   python3 - $out/record.json $out/replay-$client.json $out/replay-$client.log $code <<'PY' || fail=1
 import json, sys
@@ -220,7 +220,7 @@ done
 echo "== B1b-2 fuzz mode: same seed, same faults (Playwright, rate 0.5)"
 for run in 3a 3b 4; do
   start replay $out/shop.jsonl $out/fuzz-$run.log --fuzz ${run%[ab]} --fault-rate 0.5
-  drive playwright --fuzz $([ $run = 4 ] && echo --probe) | tail -1 > $out/fuzz-$run.json
+  drive playwright --fuzz $([ $run = 4 ] && echo --probe) | tail -1 > $out/fuzz-$run.json || true
   stop; echo $code > $out/fuzz-$run.code
 done
 python3 - $out <<'PY' || fail=1

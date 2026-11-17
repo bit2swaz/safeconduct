@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 const steps = JSON.parse(readFileSync(new URL('steps.json', import.meta.url)));
 const [client, probe, fuzz] = [process.argv[2], process.argv.includes('--probe'), process.argv.includes('--fuzz')];
-const CDP = 'http://127.0.0.1:9222';
+const CDP = process.env.SC_CDP ?? 'http://127.0.0.1:9222'; // SC_CDP: another runtime port (stress.sh)
 
 let page, done;
 if (client === 'playwright') {

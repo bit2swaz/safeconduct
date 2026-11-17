@@ -81,7 +81,7 @@ async fn main() {
     // setAutoAttach. Set them up before saying ready, or an agent that connects at once races them.
     while let Ok(ev) = events.try_recv() {
         if ev["method"] == "Target.attachedToTarget" {
-            setup(&cdp, &ev["params"], &setup_cmds.0, &setup_cmds.1, &setup_cmds.2, auto_attach.clone()).await;
+            setup(&cdp, &net, &ev["params"], &setup_cmds.0, &setup_cmds.1, &setup_cmds.2, auto_attach.clone()).await;
         }
     }
     let listener = TcpListener::bind(("127.0.0.1", port)).await.expect("bind port");
@@ -100,8 +100,9 @@ async fn main() {
                     tokio::spawn(async move { net.paused(&cdp, ev["sessionId"].as_str(), &ev["params"], llm).await });
                 }
                 Some("Target.attachedToTarget") => {
-                    tokio::spawn(async move { setup(&cdp, &ev["params"], &cmds.0, &cmds.1, &cmds.2, auto_attach).await });
+                    tokio::spawn(async move { setup(&cdp, &net, &ev["params"], &cmds.0, &cmds.1, &cmds.2, auto_attach).await });
                 }
+                Some("Target.detachedFromTarget") => net.remove_target(ev["params"]["sessionId"].as_str().unwrap_or("")),
                 _ => {}
             }
         }
@@ -109,7 +110,7 @@ async fn main() {
     let accept_loop = async {
         loop {
             let (sock, _) = listener.accept().await.unwrap();
-            tokio::spawn(handle(sock, chrome_port, port, net.clone()));
+            tokio::spawn(handle(sock, chrome_port, port, net.clone(), cdp.clone()));
         }
     };
     // Exit on Ctrl-C or SIGTERM, so Chrome is always killed below.
@@ -136,7 +137,7 @@ async fn main() {
 /// Prepare one new target, then let it run: Fetch and the init script are in place
 /// before runIfWaitingForDebugger. Extension workers are the agent's (Stagehand v4), not the site:
 /// there we only catch model calls.
-async fn setup(cdp: &Cdp, p: &Value, init: &str, site_fetch: &Value, llm_fetch: &Option<Value>, auto_attach: Value) {
+async fn setup(cdp: &Cdp, net: &Net, p: &Value, init: &str, site_fetch: &Value, llm_fetch: &Option<Value>, auto_attach: Value) {
     let s = p["sessionId"].as_str();
     let site = !p["targetInfo"]["url"].as_str().unwrap_or("").starts_with("chrome-extension://");
     match p["targetInfo"]["type"].as_str().unwrap_or("") {
@@ -148,6 +149,7 @@ async fn setup(cdp: &Cdp, p: &Value, init: &str, site_fetch: &Value, llm_fetch: 
             let script = json!({ "source": init, "runImmediately": true });
             cdp.call("Page.addScriptToEvaluateOnNewDocument", script, s).await.ok();
             cdp.call("Target.setAutoAttach", auto_attach, s).await.ok(); // its workers and OOPIFs
+            net.add_target(s.unwrap_or(""));
         }
         "worker" | "shared_worker" | "service_worker" if site => {
             cdp.call("Fetch.enable", site_fetch.clone(), s).await.ok();
@@ -220,7 +222,7 @@ fn find_chromium() -> String {
 }
 
 /// One TCP connection from the agent: a WebSocket upgrade, or plain HTTP like /json/version.
-async fn handle(sock: TcpStream, chrome_port: u16, port: u16, net: Arc<Net>) {
+async fn handle(sock: TcpStream, chrome_port: u16, port: u16, net: Arc<Net>, cdp: Arc<Cdp>) {
     let mut head = vec![0; 8192];
     let n = loop {
         let n = sock.peek(&mut head).await.unwrap_or(0);
@@ -229,7 +231,7 @@ async fn handle(sock: TcpStream, chrome_port: u16, port: u16, net: Arc<Net>) {
         }
     };
     if String::from_utf8_lossy(&head[..n]).to_ascii_lowercase().contains("upgrade: websocket") {
-        websocket(sock, chrome_port, &net).await;
+        websocket(sock, chrome_port, &net, &cdp).await;
     } else {
         http(sock, chrome_port, port).await.ok();
     }
@@ -278,7 +280,7 @@ const STARTS_WORK: [&str; 6] = [
 /// Pipe one agent WebSocket to the same path on Chrome, both ways, unchanged.
 /// Each agent command waits until the page's network is quiet (Net::settle).
 #[allow(clippy::result_large_err)] // the handshake callback's error type is tungstenite's
-async fn websocket(sock: TcpStream, chrome_port: u16, net: &Net) {
+async fn websocket(sock: TcpStream, chrome_port: u16, net: &Net, cdp: &Cdp) {
     let mut path = String::new();
     let Ok(agent) = tokio_tungstenite::accept_hdr_async(sock, |req: &tokio_tungstenite::tungstenite::handshake::server::Request, resp| {
         path = req.uri().path().to_string();
@@ -295,7 +297,7 @@ async fn websocket(sock: TcpStream, chrome_port: u16, net: &Net) {
     let (mut chrome_tx, mut chrome_rx) = chrome.split();
     let up = async {
         while let Some(Ok(m)) = agent_rx.next().await {
-            net.settle().await;
+            net.settle(cdp).await;
             net.step();
             let starts_work = m.to_text().is_ok_and(|t| STARTS_WORK.iter().any(|w| t.contains(w)));
             if m.is_close() || chrome_tx.send(m).await.is_err() {

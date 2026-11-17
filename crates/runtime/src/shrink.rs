@@ -45,11 +45,14 @@ pub fn run(cmd: &[String]) -> i32 {
             keep.push(id.to_string());
         }
     }
-    // ponytail: one fault at a time, n + 2 runs of the test. Use ddmin if tests get slow and faults many.
+    // ponytail: one fault at a time, n + 2 runs of the test (+1 per needed fault). Use ddmin if
+    // tests get slow and faults many.
     let mut i = 0;
     while i < keep.len() {
         let without: Vec<String> = keep.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, k)| k.clone()).collect();
-        if trial(Some(&without)).0 == code {
+        // A pass decides that the fault is needed, so it must happen twice: one slow or flaky
+        // pass (under load the test timed out once) would keep a fault that does not matter.
+        if trial(Some(&without)).0 == code || trial(Some(&without)).0 == code {
             keep = without;
         } else {
             i += 1;
