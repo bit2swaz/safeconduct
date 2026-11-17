@@ -3,7 +3,8 @@
 // clean: buy the cheapest product once. bad: pay twice, then leave the shop's origin.
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
-import { allowedOrigins, noDoublePayment, replay } from '../clients/ts/index.ts';
+// SC_CLIENT: test another build of the client (run.sh tests the packed npm package this way).
+const { allowedOrigins, noDoublePayment, replay } = await import(process.env.SC_CLIENT ?? '../clients/ts/index.ts');
 const steps = JSON.parse(readFileSync(new URL('steps.json', import.meta.url)));
 const [file, mode] = process.argv.slice(2);
 

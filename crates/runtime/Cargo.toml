@@ -1,9 +1,13 @@
 [package]
-name = "safeconduct-runtime"
-version = "0.0.0"
+name = "safeconduct"
+version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Deterministic replay browser for AI agents"
+description = "Deterministic replay browser for AI agents: record a run, replay it exactly, fuzz it, check rules, shrink failures"
+repository = "https://github.com/bit2swaz/safeconduct"
+readme = "../../README.md"
+keywords = ["browser", "agents", "replay", "testing", "cdp"]
+categories = ["development-tools::testing", "command-line-utilities"]
 
 [[bin]]
 name = "safeconduct"

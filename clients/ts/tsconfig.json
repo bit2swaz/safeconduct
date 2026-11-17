@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "strict": true,
+    "declaration": true,
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "files": ["index.ts"]
+}

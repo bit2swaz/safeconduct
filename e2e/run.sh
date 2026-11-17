@@ -15,6 +15,8 @@
 #   B1b-4  fingerprints: the same behavior gives the same fingerprint (record, replays, both
 #          clients). shrink: a naive buyer pays twice under 6 seeded faults; shrink finds the one
 #          fault that causes it (the dropped payment).
+#   Packages  the npm package, the PyPI wheel and the crate, built as users get them: the rules
+#          test on the installed clients (runtime found on PATH) matches the repo clients.
 #   Providers  exact mode with the OpenAI and Anthropic SDKs (plain, streamed, a tool call), and
 #          a real Browser Use agent with its model in OpenAI shape (in B1b-1). A chunked request
 #          body is read in full.
@@ -342,6 +344,39 @@ for shape in ('openai', 'anthropic'):
 ev = events('chunked')
 checks['a chunked request body matches its recorded request'] = (
     want in json.dumps(result(f'{out}/providers-chunked.json')) and not any(e['event'] == 'llm-drift' for e in ev))
+for k, ok in checks.items():
+    print(f"   {'ok  ' if ok else 'FAIL'} {k}")
+sys.exit(0 if all(checks.values()) else 1)
+PY
+
+echo "== Packages: npm tarball, PyPI wheel and crate, as users get them"
+pkg=$out/packages; mkdir -p $pkg/npm
+( cd ../clients/ts && { [ -d node_modules ] || npm ci --silent; } && npm pack --silent --pack-destination ../../e2e/$pkg ) > $pkg/build.log 2>&1 || true
+( cd ../clients/py && uv build -q --out-dir ../../e2e/$pkg ) >> $pkg/build.log 2>&1 || true
+( cd $pkg/npm && npm init -y && npm install ../safeconduct-*.tgz && echo "export * from 'safeconduct';" > client.mjs ) >> $pkg/build.log 2>&1 || true
+cargo package --list -p safeconduct --allow-dirty --manifest-path ../Cargo.toml > $pkg/crate-files.txt 2>> $pkg/build.log || true
+for mode in clean bad; do # no SAFECONDUCT_BIN, no PYTHONPATH: the runtime comes from PATH, the client from the package
+  env -u SAFECONDUCT_BIN -u PYTHONPATH PATH=$PWD/../target/debug:$PATH SC_CLIENT=file://$PWD/$pkg/npm/client.mjs \
+    timeout 120 node rules.mjs $out/shop.jsonl $mode 2>> $pkg/build.log | tail -1 > $pkg/npm-$mode.json || true
+  env -u SAFECONDUCT_BIN -u PYTHONPATH PATH=$PWD/../target/debug:$PATH \
+    timeout 180 uv run -q --with $(ls $pkg/safeconduct-*.whl 2>/dev/null | head -1) rules.py $out/shop.jsonl $mode 2>> $pkg/build.log | tail -1 > $pkg/pypi-$mode.json || true
+done
+python3 - $out <<'PY' || fail=1
+import json, sys
+out = sys.argv[1]
+def r(f):
+    try:
+        d = json.load(open(f))
+        return d['code'], d['steps'], [(v['rule'].replace('_', '').lower(), v['step'], v['message']) for v in d['violations']], d['fingerprint']
+    except (ValueError, KeyError, FileNotFoundError):
+        return None
+crate = open(f'{out}/packages/crate-files.txt').read().split()
+checks = {}
+for mode in ('clean', 'bad'):
+    want = r(f'{out}/rules-ts-{mode}.json')
+    checks[f'npm package, {mode} run: the same result as the repo client'] = want is not None and r(f'{out}/packages/npm-{mode}.json') == want
+    checks[f'PyPI wheel, {mode} run: the same result as the repo client'] = want is not None and r(f'{out}/packages/pypi-{mode}.json') == want
+checks['the crate holds the runtime sources'] = all(f in crate for f in ('src/main.rs', 'src/init.js', 'Cargo.toml'))
 for k, ok in checks.items():
     print(f"   {'ok  ' if ok else 'FAIL'} {k}")
 sys.exit(0 if all(checks.values()) else 1)

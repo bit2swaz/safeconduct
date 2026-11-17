@@ -1,0 +1,14 @@
+{
+  "name": "safeconduct",
+  "version": "0.1.0",
+  "description": "Rules for safeconduct, the replay browser for AI agents: start a run, check rules after every step",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/bit2swaz/safeconduct.git", "directory": "clients/ts" },
+  "keywords": ["browser", "agents", "replay", "testing", "cdp", "playwright", "stagehand"],
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "engines": { "node": ">=18" },
+  "scripts": { "build": "tsc", "prepack": "tsc" },
+  "devDependencies": { "@types/node": "26.6.6", "typescript": "7.0.2" }
+}
